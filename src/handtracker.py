@@ -45,6 +45,32 @@ class HandTracker:
         self.quad_active = True
         self.pinched_start_time = None
 
+    def draw_miniplayer(self, frame, rect_points, track_info=None):
+        # Warp a blank image to the rectangle
+        h, w = 120, 300  # Miniplayer size
+        miniplayer_img = np.ones((h, w, 3), dtype=np.uint8) * 30  # Dark background
+
+        # Draw buttons
+        cv2.circle(miniplayer_img, (50, 60), 25, (255, 255, 255), -1)  # Prev
+        cv2.circle(miniplayer_img, (150, 60), 25, (255, 255, 255), -1) # Play/Pause
+        cv2.circle(miniplayer_img, (250, 60), 25, (255, 255, 255), -1) # Next
+
+        # Draw track info if available
+        if track_info:
+            cv2.putText(miniplayer_img, track_info['name'], (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
+            cv2.putText(miniplayer_img, track_info['artist'], (10, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200,200,200), 1)
+
+        # Warp to rectangle
+        src_pts = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
+        dst_pts = np.float32(rect_points)
+        matrix = cv2.getPerspectiveTransform(src_pts, dst_pts)
+        warped = cv2.warpPerspective(miniplayer_img, matrix, (frame.shape[1], frame.shape[0]))
+        mask = np.zeros_like(frame, dtype=np.uint8)
+        cv2.fillConvexPoly(mask, np.int32(dst_pts), (255, 255, 255))
+        frame = cv2.bitwise_and(frame, cv2.bitwise_not(mask))
+        frame = cv2.add(frame, warped)
+        return frame
+
     def is_pinched(self, thumb_tip, index_tip, threshold=100):
         x1, y1 = thumb_tip
         x2, y2 = index_tip
@@ -122,9 +148,8 @@ class HandTracker:
                 cv2.line(frame, self.points[i - 1], self.points[i], (0, 255, 0), 2)
 
         if self.quad_active and len(self.quad_points) == 4:
-            window_img = capture_window("Spotify") 
-            if window_img is not None:
-                frame = self.draw_window_in_rectangle(frame, self.quad_points, window_img)
+            track_info = None
+            frame = self.draw_miniplayer(frame, self.quad_points, track_info)
         return frame
     
     def toggle_quad(self):

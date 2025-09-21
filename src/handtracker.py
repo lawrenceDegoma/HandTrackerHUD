@@ -1,0 +1,133 @@
+import cv2
+import mediapipe as mp
+import math
+import time
+import numpy as np
+import Quartz
+
+def capture_window(window_title="Spotify"):
+    window_list = Quartz.CGWindowListCopyWindowInfo(
+        Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID
+    )
+
+    for window in window_list:
+        if window.get('kCGWindowOwnerName', '') == window_title:
+            bounds = window['kCGWindowBounds']
+            x, y, w, h = int(bounds['X']), int(bounds['Y']), int(bounds['Width']), int(bounds['Height'])
+
+            image = Quartz.CGWindowListCreateImage(
+                Quartz.CGRectMake(x, y, w, h),
+                Quartz.kCGWindowListOptionIncludingWindow,
+                window['kCGWindowNumber'],
+                Quartz.kCGWindowImageDefault
+            )
+            if image:
+                width = Quartz.CGImageGetWidth(image)
+                height = Quartz.CGImageGetHeight(image)
+                bytes_per_row = Quartz.CGImageGetBytesPerRow(image)
+                data_provider = Quartz.CGImageGetDataProvider(image)
+                data = Quartz.CGDataProviderCopyData(data_provider)
+                arr = np.frombuffer(data, dtype=np.uint8)
+                arr = arr.reshape((height, bytes_per_row // 4, 4))
+
+                img = arr[:, :w, :3][:, :, ::-1].copy()
+                return img
+    return None
+
+class HandTracker:
+    def __init__(self):
+        self.mp_hands = mp.solutions.hands
+        self.hands = self.mp_hands.Hands()
+        self.mp_drawing = mp.solutions.drawing_utils
+        self.tracing_enabled = False
+        self.points = []
+        self.quad_points = []
+        self.quad_active = True
+        self.pinched_start_time = None
+
+    def is_pinched(self, thumb_tip, index_tip, threshold=100):
+        x1, y1 = thumb_tip
+        x2, y2 = index_tip
+        return math.hypot(x2 - x1, y2 - y1) < threshold
+    
+    def get_rectangle_from_points(self, points):
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        left, right = min(xs), max(xs)
+        top, bottom = min(ys), max(ys)
+        return [(left, top), (right, top), (right, bottom), (left, bottom)]
+
+    def draw_window_in_rectangle(self, frame, rect_points, content_img):
+        if content_img is None:
+            return frame
+        h, w, _ = content_img.shape
+        src_pts = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
+        dst_pts = np.float32(rect_points)
+        matrix = cv2.getPerspectiveTransform(src_pts, dst_pts)
+        warped = cv2.warpPerspective(content_img, matrix, (frame.shape[1], frame.shape[0]))
+        mask = np.zeros_like(frame, dtype=np.uint8)
+        cv2.fillConvexPoly(mask, np.int32(dst_pts), (255, 255, 255))
+        frame = cv2.bitwise_and(frame, cv2.bitwise_not(mask))
+        frame = cv2.add(frame, warped)
+        return frame
+
+    def process_frame(self, frame):
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = self.hands.process(frame_rgb)
+        quad_points = []
+
+        if results.multi_hand_landmarks:
+            for hand_landmarks in results.multi_hand_landmarks:
+                self.mp_drawing.draw_landmarks(frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
+
+                h, w, _ = frame.shape
+                thumb_tip = hand_landmarks.landmark[4]
+                index_tip = hand_landmarks.landmark[8]
+                thumb_xy = (int(thumb_tip.x * w), int(thumb_tip.y * h))
+                index_xy = (int(index_tip.x * w), int(index_tip.y * h))
+
+                cv2.circle(frame, thumb_xy, 8, (255, 0, 0), -1)
+                cv2.circle(frame, index_xy, 8, (0, 255, 0), -1)
+
+                if self.is_pinched(thumb_xy, index_xy):
+                    quad_points.append(thumb_xy)
+                    quad_points.append(index_xy)
+
+                if self.tracing_enabled:
+                    h, w, _ = frame.shape
+                    index_tip = hand_landmarks.landmark[8]
+                    x, y = int(index_tip.x * w), int(index_tip.y * h)
+                    self.points.append((x, y))
+                    cv2.circle(frame, (x, y), 5, (0, 0, 255), -1)
+            
+            if len(quad_points) == 4:
+                if self.pinched_start_time is None:
+                    self.pinched_start_time = time.time()
+
+                live_rect = self.get_rectangle_from_points(quad_points)
+                for i in range(4):
+                    cv2.line(frame, live_rect[i], live_rect[(i+1)%4], (0, 255, 255), 3)
+                
+                if time.time() - self.pinched_start_time >= 3.0:
+                    self.quad_points = live_rect
+                    self.quad_active = True
+            else:
+                self.pinched_start_time = None
+
+        else:
+            self.pinched_start_time = None
+
+        if self.tracing_enabled:
+            for i in range(1, len(self.points)):
+                cv2.line(frame, self.points[i - 1], self.points[i], (0, 255, 0), 2)
+
+        if self.quad_active and len(self.quad_points) == 4:
+            window_img = capture_window("Spotify") 
+            if window_img is not None:
+                frame = self.draw_window_in_rectangle(frame, self.quad_points, window_img)
+        return frame
+    
+    def toggle_quad(self):
+        self.quad_active = not self.quad_active
+        if not self.quad_active:
+            self.quad_points = []

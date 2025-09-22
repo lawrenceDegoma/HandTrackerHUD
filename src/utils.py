@@ -1,6 +1,7 @@
 import spotipy
 from dotenv import load_dotenv
 load_dotenv()
+
 from spotipy.oauth2 import SpotifyOAuth
 import os
 
@@ -11,11 +12,12 @@ sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
     scope="user-read-playback-state,user-modify-playback-state,user-read-currently-playing"
 ))
 
-def play():
-    sp.start_playback()
-
-def pause():
-    sp.pause_playback()
+def toggle_play_pause():
+    current = sp.current_playback()
+    if current and current['is_playing']:
+        sp.pause_playback()
+    else:
+        sp.start_playback()
 
 def next_track():
     sp.next_track()

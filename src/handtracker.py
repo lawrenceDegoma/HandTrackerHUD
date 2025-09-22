@@ -3,10 +3,16 @@ import mediapipe as mp
 import math
 import time
 import numpy as np
-import Quartz
-from utils import play, pause, next_track, previous_track, get_current_track
+from utils import toggle_play_pause, next_track, previous_track, get_current_track
 
 class HandTracker:
+    MINIPLAYER_BUTTONS = {
+    "prev":  (50, 60),
+    "play":  (150, 60),
+    "next":  (250, 60)
+    }
+    MINIPLAYER_RADIUS = 25
+
     def __init__(self):
         self.mp_hands = mp.solutions.hands
         self.hands = self.mp_hands.Hands()
@@ -51,6 +57,15 @@ class HandTracker:
         frame = cv2.bitwise_and(frame, cv2.bitwise_not(mask))
         frame = cv2.add(frame, warped)
         return frame
+    
+    def screen_to_miniplayer(self, pt, rect_points, miniplayer_size=(120, 300)):
+        src_pts = np.float32(rect_points)
+        dst_pts = np.float32([[0, 0], [miniplayer_size[1], 0], [miniplayer_size[1], miniplayer_size[0]], [0, miniplayer_size[0]]])
+        matrix = cv2.getPerspectiveTransform(src_pts, dst_pts)
+        pt_homog = np.array([[pt]], dtype=np.float32)
+        pt_transformed = cv2.perspectiveTransform(pt_homog, matrix)
+        x, y = pt_transformed[0][0]
+        return int(x), int(y)
 
     def is_pinched(self, thumb_tip, index_tip, threshold=100):
         x1, y1 = thumb_tip
@@ -131,6 +146,27 @@ class HandTracker:
         if self.quad_active and len(self.quad_points) == 4:
             track_info = self.get_cached_track_info()
             frame = self.draw_miniplayer(frame, self.quad_points, track_info)
+
+            if results.multi_hand_landmarks:
+                for hand_landmarks in results.multi_hand_landmarks:
+                    h, w, _ = frame.shape
+                    index_tip = hand_landmarks.landmark[8]
+                    index_xy = (int(index_tip.x * w), int(index_tip.y * h))
+                    miniplayer_xy = self.screen_to_miniplayer(index_xy, self.quad_points)
+
+                    for btn, center in self.MINIPLAYER_BUTTONS.items():
+                        dist = math.hypot(miniplayer_xy[0] - center[0], miniplayer_xy[1] - center[1])
+                        if dist < self.MINIPLAYER_RADIUS:
+                            if not hasattr(self, 'last_btn_time'):
+                                self.last_btn_time = 0
+                            if time.time() - self.last_btn_time > 1:
+                                if btn == "prev":
+                                    previous_track()
+                                elif btn == "play":
+                                    toggle_play_pause()  # Add pause toggle logic if desired
+                                elif btn == "next":
+                                    next_track()
+                                self.last_btn_time = time.time()
         return frame
     
     def toggle_quad(self):

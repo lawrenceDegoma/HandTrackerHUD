@@ -1,7 +1,10 @@
 import cv2
 from handtracker import HandTracker
+from utils import get_current_track
 
 def main():
+    _ = get_current_track()
+
     cap = cv2.VideoCapture(0)
     tracker = HandTracker()
 

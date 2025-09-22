@@ -7,5 +7,5 @@ __pycache__/
 .DS_Store
 .idea/
 *.log
-.cache
-.src/cache
+.cache/
+.src/cache/

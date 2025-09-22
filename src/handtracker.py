@@ -4,35 +4,7 @@ import math
 import time
 import numpy as np
 import Quartz
-
-def capture_window(window_title="Spotify"):
-    window_list = Quartz.CGWindowListCopyWindowInfo(
-        Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID
-    )
-
-    for window in window_list:
-        if window.get('kCGWindowOwnerName', '') == window_title:
-            bounds = window['kCGWindowBounds']
-            x, y, w, h = int(bounds['X']), int(bounds['Y']), int(bounds['Width']), int(bounds['Height'])
-
-            image = Quartz.CGWindowListCreateImage(
-                Quartz.CGRectMake(x, y, w, h),
-                Quartz.kCGWindowListOptionIncludingWindow,
-                window['kCGWindowNumber'],
-                Quartz.kCGWindowImageDefault
-            )
-            if image:
-                width = Quartz.CGImageGetWidth(image)
-                height = Quartz.CGImageGetHeight(image)
-                bytes_per_row = Quartz.CGImageGetBytesPerRow(image)
-                data_provider = Quartz.CGImageGetDataProvider(image)
-                data = Quartz.CGDataProviderCopyData(data_provider)
-                arr = np.frombuffer(data, dtype=np.uint8)
-                arr = arr.reshape((height, bytes_per_row // 4, 4))
-
-                img = arr[:, :w, :3][:, :, ::-1].copy()
-                return img
-    return None
+from utils import play, pause, next_track, previous_track, get_current_track
 
 class HandTracker:
     def __init__(self):
@@ -44,6 +16,15 @@ class HandTracker:
         self.quad_points = []
         self.quad_active = True
         self.pinched_start_time = None
+        self.last_track_info = None
+        self.last_track_update = 0
+
+    def get_cached_track_info(self):
+        now = time.time()
+        if now - self.last_track_update > 1:  # Update every 1 second
+            self.last_track_info = get_current_track()
+            self.last_track_update = now
+        return self.last_track_info
 
     def draw_miniplayer(self, frame, rect_points, track_info=None):
         # Warp a blank image to the rectangle
@@ -148,7 +129,7 @@ class HandTracker:
                 cv2.line(frame, self.points[i - 1], self.points[i], (0, 255, 0), 2)
 
         if self.quad_active and len(self.quad_points) == 4:
-            track_info = None
+            track_info = self.get_cached_track_info()
             frame = self.draw_miniplayer(frame, self.quad_points, track_info)
         return frame
     

@@ -1,24 +1,34 @@
-import cv2
+import spotipy
+from dotenv import load_dotenv
+load_dotenv()
+from spotipy.oauth2 import SpotifyOAuth
+import os
 
-def draw_landmarks(image, hand_landmarks, connections):
-    for connection in connections:
-        start = hand_landmarks.landmark[connection[0]]
-        end = hand_landmarks.landmark[connection[1]]
-        start_point = (int(start.x * image.shape[1]), int(start.y * image.shape[0]))
-        end_point = (int(end.x * image.shape[1]), int(end.y * image.shape[0]))
-        cv2.line(image, start_point, end_point, (0, 255, 0), 2)
+sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
+    client_id=os.getenv("SPOTIPY_CLIENT_ID"),
+    client_secret=os.getenv("SPOTIPY_CLIENT_SECRET"),
+    redirect_uri=os.getenv("SPOTIPY_REDIRECT_URI"),
+    scope="user-read-playback-state,user-modify-playback-state,user-read-currently-playing"
+))
 
-def process_frame(frame, hands):
-    results = hands.process(frame)
-    if results.multi_hand_landmarks:
-        for hand_landmarks in results.multi_hand_landmarks:
-            draw_landmarks(frame, hand_landmarks, HAND_CONNECTIONS)
-    return frame
+def play():
+    sp.start_playback()
 
-HAND_CONNECTIONS = [
-    (0, 1), (1, 2), (2, 3), (3, 4),  # Thumb
-    (0, 5), (5, 6), (6, 7), (7, 8),  # Index
-    (0, 9), (9, 10), (10, 11), (11, 12),  # Middle
-    (0, 13), (13, 14), (14, 15), (15, 16),  # Ring
-    (0, 17), (17, 18), (18, 19), (19, 20)   # Pinky
-]
+def pause():
+    sp.pause_playback()
+
+def next_track():
+    sp.next_track()
+
+def previous_track():
+    sp.previous_track()
+
+def get_current_track():
+    current = sp.current_playback()
+    if current and current['item']:
+        return {
+            "name": current['item']['name'],
+            "artist": current['item']['artists'][0]['name'],
+            "album_art": current['item']['album']['images'][0]['url']
+        }
+    return None

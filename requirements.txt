@@ -1,4 +1,0 @@
-MediaPipe
-opencv-python
-numpy
-pyobjc-framework-Quartz

@@ -1,0 +1,14 @@
+[project]
+name = "hand-tracker"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mediapipe>=0.10.21",
+    "numpy>=1.26.4",
+    "opencv-python>=4.11.0.86",
+    "pyobjc-framework-quartz>=11.1",
+    "python-dotenv>=1.1.1",
+    "spotipy>=2.25.1",
+]

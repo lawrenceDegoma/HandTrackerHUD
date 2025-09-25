@@ -3,14 +3,17 @@ import mediapipe as mp
 import math
 import time
 import numpy as np
-from utils import toggle_play_pause, next_track, previous_track, get_current_track
+from utils import (
+    toggle_play_pause,
+    next_track,
+    previous_track,
+    get_current_track,
+    set_volume,
+)
+
 
 class HandTracker:
-    MINIPLAYER_BUTTONS = {
-    "prev":  (50, 60),
-    "play":  (150, 60),
-    "next":  (250, 60)
-    }
+    MINIPLAYER_BUTTONS = {"prev": (50, 60), "play": (150, 60), "next": (250, 60)}
     MINIPLAYER_RADIUS = 25
 
     def __init__(self):
@@ -24,43 +27,98 @@ class HandTracker:
         self.pinched_start_time = None
         self.last_track_info = None
         self.last_track_update = 0
+        self.volume_gesture_enabled = False
+        self.last_volume_set = 0
 
     def get_cached_track_info(self):
         now = time.time()
-        if now - self.last_track_update > 1:  # Update every 1 second
+        # Update every 1 second
+        if now - self.last_track_update > 1:
             self.last_track_info = get_current_track()
             self.last_track_update = now
         return self.last_track_info
 
-    def draw_miniplayer(self, frame, rect_points, track_info=None):
+    def draw_miniplayer(self, frame, rect_points, track_info=None, volume=None):
         # Warp a blank image to the rectangle
-        h, w = 120, 300  # Miniplayer size
+        h, w = 120, 300
         miniplayer_img = np.ones((h, w, 3), dtype=np.uint8) * 30  # Dark background
 
         # Draw buttons
         cv2.circle(miniplayer_img, (50, 60), 25, (255, 255, 255), -1)  # Prev
-        cv2.circle(miniplayer_img, (150, 60), 25, (255, 255, 255), -1) # Play/Pause
-        cv2.circle(miniplayer_img, (250, 60), 25, (255, 255, 255), -1) # Next
+        cv2.circle(miniplayer_img, (150, 60), 25, (255, 255, 255), -1)  # Play/Pause
+        cv2.circle(miniplayer_img, (250, 60), 25, (255, 255, 255), -1)  # Next
 
-        # Draw track info if available
+        # Draw track info
         if track_info:
-            cv2.putText(miniplayer_img, track_info['name'], (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
-            cv2.putText(miniplayer_img, track_info['artist'], (10, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200,200,200), 1)
+            cv2.putText(
+                miniplayer_img,
+                track_info["name"],
+                (10, 110),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 255, 255),
+                2,
+            )
+            cv2.putText(
+                miniplayer_img,
+                track_info["artist"],
+                (10, 130),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (200, 200, 200),
+                1,
+            )
+
+        if volume is not None:
+            bar_x, bar_y, bar_w, bar_h = 80, 100, 140, 10
+            cv2.rectangle(
+                miniplayer_img,
+                (bar_x, bar_y),
+                (bar_x + bar_w, bar_y + bar_h),
+                (100, 255, 100),
+                2,
+            )
+            fill_w = int(bar_w * volume / 100)
+            cv2.rectangle(
+                miniplayer_img,
+                (bar_x, bar_y),
+                (bar_x + fill_w, bar_y + bar_h),
+                (100, 255, 100),
+                -1,
+            )
+            cv2.putText(
+                miniplayer_img,
+                f"Vol: {volume}",
+                (bar_x + bar_w + 10, bar_y + bar_h),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 255, 255),
+                1,
+            )
 
         # Warp to rectangle
         src_pts = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
         dst_pts = np.float32(rect_points)
         matrix = cv2.getPerspectiveTransform(src_pts, dst_pts)
-        warped = cv2.warpPerspective(miniplayer_img, matrix, (frame.shape[1], frame.shape[0]))
+        warped = cv2.warpPerspective(
+            miniplayer_img, matrix, (frame.shape[1], frame.shape[0])
+        )
         mask = np.zeros_like(frame, dtype=np.uint8)
         cv2.fillConvexPoly(mask, np.int32(dst_pts), (255, 255, 255))
         frame = cv2.bitwise_and(frame, cv2.bitwise_not(mask))
         frame = cv2.add(frame, warped)
         return frame
-    
+
     def screen_to_miniplayer(self, pt, rect_points, miniplayer_size=(120, 300)):
         src_pts = np.float32(rect_points)
-        dst_pts = np.float32([[0, 0], [miniplayer_size[1], 0], [miniplayer_size[1], miniplayer_size[0]], [0, miniplayer_size[0]]])
+        dst_pts = np.float32(
+            [
+                [0, 0],
+                [miniplayer_size[1], 0],
+                [miniplayer_size[1], miniplayer_size[0]],
+                [0, miniplayer_size[0]],
+            ]
+        )
         matrix = cv2.getPerspectiveTransform(src_pts, dst_pts)
         pt_homog = np.array([[pt]], dtype=np.float32)
         pt_transformed = cv2.perspectiveTransform(pt_homog, matrix)
@@ -71,7 +129,7 @@ class HandTracker:
         x1, y1 = thumb_tip
         x2, y2 = index_tip
         return math.hypot(x2 - x1, y2 - y1) < threshold
-    
+
     def get_rectangle_from_points(self, points):
         xs = [p[0] for p in points]
         ys = [p[1] for p in points]
@@ -86,7 +144,9 @@ class HandTracker:
         src_pts = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
         dst_pts = np.float32(rect_points)
         matrix = cv2.getPerspectiveTransform(src_pts, dst_pts)
-        warped = cv2.warpPerspective(content_img, matrix, (frame.shape[1], frame.shape[0]))
+        warped = cv2.warpPerspective(
+            content_img, matrix, (frame.shape[1], frame.shape[0])
+        )
         mask = np.zeros_like(frame, dtype=np.uint8)
         cv2.fillConvexPoly(mask, np.int32(dst_pts), (255, 255, 255))
         frame = cv2.bitwise_and(frame, cv2.bitwise_not(mask))
@@ -100,7 +160,9 @@ class HandTracker:
 
         if results.multi_hand_landmarks:
             for hand_landmarks in results.multi_hand_landmarks:
-                self.mp_drawing.draw_landmarks(frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
+                self.mp_drawing.draw_landmarks(
+                    frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS
+                )
 
                 h, w, _ = frame.shape
                 thumb_tip = hand_landmarks.landmark[4]
@@ -121,15 +183,17 @@ class HandTracker:
                     x, y = int(index_tip.x * w), int(index_tip.y * h)
                     self.points.append((x, y))
                     cv2.circle(frame, (x, y), 5, (0, 0, 255), -1)
-            
+
             if len(quad_points) == 4:
                 if self.pinched_start_time is None:
                     self.pinched_start_time = time.time()
 
                 live_rect = self.get_rectangle_from_points(quad_points)
                 for i in range(4):
-                    cv2.line(frame, live_rect[i], live_rect[(i+1)%4], (0, 255, 255), 3)
-                
+                    cv2.line(
+                        frame, live_rect[i], live_rect[(i + 1) % 4], (0, 255, 255), 3
+                    )
+
                 if time.time() - self.pinched_start_time >= 3.0:
                     self.quad_points = live_rect
                     self.quad_active = True
@@ -144,6 +208,27 @@ class HandTracker:
                 cv2.line(frame, self.points[i - 1], self.points[i], (0, 255, 0), 2)
 
         if self.quad_active and len(self.quad_points) == 4:
+            volume = None
+            if self.volume_gesture_enabled and results.multi_hand_landmarks:
+                hand_landmarks = results.multi_hand_landmarks[0]
+                h, w, _ = frame.shape
+                thumb_tip = hand_landmarks.landmark[4]
+                index_tip = hand_landmarks.landmark[8]
+                x1, y1 = int(thumb_tip.x * w), int(thumb_tip.y * h)
+                x2, y2 = int(index_tip.x * w), int(index_tip.y * h)
+                pinch_dist = math.hypot(x2 - x1, y2 - y1)
+
+                min_dist, max_dist = 20, 200
+                volume = int(
+                    np.clip(
+                        (pinch_dist - min_dist) / (max_dist - min_dist) * 100, 0, 100
+                    )
+                )
+
+                if abs(volume - self.last_volume_set) > 2:
+                    set_volume(volume)
+                    self.last_volume_set = volume
+
             track_info = self.get_cached_track_info()
             frame = self.draw_miniplayer(frame, self.quad_points, track_info)
 
@@ -152,23 +237,27 @@ class HandTracker:
                     h, w, _ = frame.shape
                     index_tip = hand_landmarks.landmark[8]
                     index_xy = (int(index_tip.x * w), int(index_tip.y * h))
-                    miniplayer_xy = self.screen_to_miniplayer(index_xy, self.quad_points)
+                    miniplayer_xy = self.screen_to_miniplayer(
+                        index_xy, self.quad_points
+                    )
 
                     for btn, center in self.MINIPLAYER_BUTTONS.items():
-                        dist = math.hypot(miniplayer_xy[0] - center[0], miniplayer_xy[1] - center[1])
+                        dist = math.hypot(
+                            miniplayer_xy[0] - center[0], miniplayer_xy[1] - center[1]
+                        )
                         if dist < self.MINIPLAYER_RADIUS:
-                            if not hasattr(self, 'last_btn_time'):
+                            if not hasattr(self, "last_btn_time"):
                                 self.last_btn_time = 0
                             if time.time() - self.last_btn_time > 1:
                                 if btn == "prev":
                                     previous_track()
                                 elif btn == "play":
-                                    toggle_play_pause()  # Add pause toggle logic if desired
+                                    toggle_play_pause()
                                 elif btn == "next":
                                     next_track()
                                 self.last_btn_time = time.time()
         return frame
-    
+
     def toggle_quad(self):
         self.quad_active = not self.quad_active
         if not self.quad_active:

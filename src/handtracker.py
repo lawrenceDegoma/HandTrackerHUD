@@ -29,6 +29,8 @@ class HandTracker:
         self.last_track_update = 0
         self.volume_gesture_enabled = False
         self.last_volume_set = 0
+        self.spawned_app = None  # name of app/miniplayer requested by voice or UI
+        self.voice_enabled = True  # voice controls enabled by default
 
     def get_cached_track_info(self):
         now = time.time()
@@ -194,9 +196,16 @@ class HandTracker:
                         frame, live_rect[i], live_rect[(i + 1) % 4], (0, 255, 255), 3
                     )
 
-                if time.time() - self.pinched_start_time >= 3.0:
-                    self.quad_points = live_rect
-                    self.quad_active = True
+                # If voice controls are enabled, detach when a spawn request exists
+                if self.voice_enabled:
+                    if self.spawned_app is not None:
+                        self.quad_points = live_rect
+                        self.quad_active = True
+                else:
+                    # voice disabled -> original behavior: detach after 2 seconds
+                    if time.time() - self.pinched_start_time >= 2.0:
+                        self.quad_points = live_rect
+                        self.quad_active = True
             else:
                 self.pinched_start_time = None
 
@@ -262,3 +271,10 @@ class HandTracker:
         self.quad_active = not self.quad_active
         if not self.quad_active:
             self.quad_points = []
+
+    def spawn_miniplayer(self, app_name: str = "Spotify"):
+        """Request a miniplayer for an app. This sets state — the main loop will draw the miniplayer when a quad exists."""
+        self.spawned_app = app_name
+        self.quad_active = True
+        # Keep existing quad_points if present; user can form the quad first
+        print(f"Spawn requested for: {app_name}")

@@ -1,11 +1,10 @@
+import numpy as np
+import os
 import spotipy
 from dotenv import load_dotenv
+from spotipy.oauth2 import SpotifyOAuth
 
 load_dotenv()
-import numpy as np
-
-from spotipy.oauth2 import SpotifyOAuth
-import os
 
 sp = spotipy.Spotify(
     auth_manager=SpotifyOAuth(

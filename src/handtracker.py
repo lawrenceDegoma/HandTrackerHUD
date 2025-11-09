@@ -15,8 +15,13 @@ import queue
 
 
 class HandTracker:
-    MINIPLAYER_BUTTONS = {"prev": (50, 60), "play": (150, 60), "next": (250, 60)}
-    MINIPLAYER_RADIUS = 25
+    # Updated button positions for the new modern miniplayer (400x150) with button_spacing=45
+    MINIPLAYER_BUTTONS = {
+        "prev": (245, 75),    # Previous button (controls_x - button_spacing = 290 - 45)
+        "play": (290, 75),    # Play/pause button (controls_x = 290) 
+        "next": (335, 75)     # Next button (controls_x + button_spacing = 290 + 45)
+    }
+    MINIPLAYER_RADIUS = 18
 
     def __init__(self):
         self.mp_hands = mp.solutions.hands
@@ -39,6 +44,11 @@ class HandTracker:
         self.dragging_window = False
         self.drag_corner_index = None  # which corner (0-3) is being dragged
         self.drag_offset = (0, 0)  # offset from corner to pinch point
+        
+        # Window resizing state
+        self.resizing_window = False
+        self.resize_corners = []  # list of corner indices being pinched
+        self.resize_initial_positions = []  # initial positions of pinched corners
         
         # Close gesture state
         self.close_gesture_start_pos = None
@@ -63,7 +73,7 @@ class HandTracker:
             self.last_track_update = now
         return self.last_track_info
 
-    def screen_to_miniplayer(self, pt, rect_points, miniplayer_size=(300, 120)):
+    def screen_to_miniplayer(self, pt, rect_points, miniplayer_size=(400, 150)):
         src_pts = np.float32(rect_points)
         width, height = miniplayer_size
         dst_pts = np.float32(
@@ -85,6 +95,42 @@ class HandTracker:
         x1, y1 = point
         x2, y2 = corner
         return math.hypot(x2 - x1, y2 - y1) < threshold
+
+    def are_opposite_corners(self, corner1, corner2):
+        """Check if two corners are opposite (diagonal) to each other."""
+        # Corners: 0=top-left, 1=top-right, 2=bottom-right, 3=bottom-left
+        opposite_pairs = [(0, 2), (1, 3)]  # (top-left, bottom-right), (top-right, bottom-left)
+        return (corner1, corner2) in opposite_pairs or (corner2, corner1) in opposite_pairs
+
+    def update_quad_resize(self, corner_positions):
+        """Update quad size by moving opposite corners."""
+        if not self.quad_points or len(self.quad_points) != 4 or len(corner_positions) != 2:
+            return
+        
+        corner1_idx, corner1_pos = corner_positions[0]
+        corner2_idx, corner2_pos = corner_positions[1]
+        
+        # Update the quad points with new corner positions
+        new_quad = list(self.quad_points)
+        new_quad[corner1_idx] = corner1_pos
+        new_quad[corner2_idx] = corner2_pos
+        
+        # For opposite corners, we need to update the other two corners to maintain rectangle shape
+        if self.are_opposite_corners(corner1_idx, corner2_idx):
+            if corner1_idx == 0 and corner2_idx == 2:  # top-left and bottom-right
+                new_quad[1] = (corner2_pos[0], corner1_pos[1])  # top-right
+                new_quad[3] = (corner1_pos[0], corner2_pos[1])  # bottom-left
+            elif corner1_idx == 1 and corner2_idx == 3:  # top-right and bottom-left
+                new_quad[0] = (corner2_pos[0], corner1_pos[1])  # top-left
+                new_quad[2] = (corner1_pos[0], corner2_pos[1])  # bottom-right
+            elif corner1_idx == 2 and corner2_idx == 0:  # bottom-right and top-left
+                new_quad[1] = (corner1_pos[0], corner2_pos[1])  # top-right
+                new_quad[3] = (corner2_pos[0], corner1_pos[1])  # bottom-left
+            elif corner1_idx == 3 and corner2_idx == 1:  # bottom-left and top-right
+                new_quad[0] = (corner1_pos[0], corner2_pos[1])  # top-left
+                new_quad[2] = (corner2_pos[0], corner1_pos[1])  # bottom-right
+        
+        self.quad_points = new_quad
 
     def update_quad_position(self, new_corner_pos, corner_index):
         """Update quad position by moving one corner and adjusting the rectangle."""
@@ -238,6 +284,9 @@ class HandTracker:
         quad_points = []
 
         if results.multi_hand_landmarks:
+            # Collect all pinch data from all hands for resize detection
+            all_pinches = []
+            
             for hand_landmarks in results.multi_hand_landmarks:
                 self.mp_drawing.draw_landmarks(
                     frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS
@@ -252,6 +301,67 @@ class HandTracker:
                 cv2.circle(frame, thumb_xy, 8, (255, 0, 0), -1)
                 cv2.circle(frame, index_xy, 8, (0, 255, 0), -1)
 
+                # Store pinch data for resize detection
+                if self.is_pinched(thumb_xy, index_xy):
+                    pinch_center = ((thumb_xy[0] + index_xy[0]) // 2, (thumb_xy[1] + index_xy[1]) // 2)
+                    all_pinches.append((hand_landmarks, thumb_xy, index_xy, pinch_center))
+
+            # Check for resize gesture (two hands pinching opposite corners)
+            if len(all_pinches) == 2 and self.quad_points and len(self.quad_points) == 4:
+                pinch1_center = all_pinches[0][3]
+                pinch2_center = all_pinches[1][3]
+                
+                # Find which corners are being pinched
+                corners_pinched = []
+                for i, corner in enumerate(self.quad_points):
+                    if self.is_near_corner(pinch1_center, corner, threshold=50):
+                        corners_pinched.append((i, pinch1_center))
+                    elif self.is_near_corner(pinch2_center, corner, threshold=50):
+                        corners_pinched.append((i, pinch2_center))
+                
+                # Check if we have opposite corners being pinched
+                if len(corners_pinched) == 2:
+                    corner1_idx = corners_pinched[0][0]
+                    corner2_idx = corners_pinched[1][0]
+                    
+                    if self.are_opposite_corners(corner1_idx, corner2_idx):
+                        if not self.resizing_window:
+                            # Start resizing
+                            self.resizing_window = True
+                            self.resize_corners = [corner1_idx, corner2_idx]
+                            print(f"Started resizing with corners {corner1_idx} and {corner2_idx}")
+                        else:
+                            # Continue resizing
+                            corner_positions = [
+                                (corners_pinched[0][0], corners_pinched[0][1]),
+                                (corners_pinched[1][0], corners_pinched[1][1])
+                            ]
+                            self.update_quad_resize(corner_positions)
+                    else:
+                        # Not opposite corners - stop resizing
+                        if self.resizing_window:
+                            self.resizing_window = False
+                            self.resize_corners = []
+                            print("Stopped resizing - corners not opposite")
+                else:
+                    # Not pinching corners - stop resizing
+                    if self.resizing_window:
+                        self.resizing_window = False
+                        self.resize_corners = []
+            else:
+                # Not enough pinches or no quad - stop resizing
+                if self.resizing_window:
+                    self.resizing_window = False
+                    self.resize_corners = []
+
+            # Process each hand for other gestures (but skip if resizing)
+            for hand_landmarks in results.multi_hand_landmarks:
+                h, w, _ = frame.shape
+                thumb_tip = hand_landmarks.landmark[4]
+                index_tip = hand_landmarks.landmark[8]
+                thumb_xy = (int(thumb_tip.x * w), int(thumb_tip.y * h))
+                index_xy = (int(index_tip.x * w), int(index_tip.y * h))
+
                 # Check for close gesture (two-finger swipe left from top-right)
                 if self.quad_points and len(self.quad_points) == 4:
                     if self.check_close_gesture(hand_landmarks, frame.shape):
@@ -264,12 +374,12 @@ class HandTracker:
                         print("Window closed by gesture")
                         continue  # Skip other gesture processing for this hand
 
-                # Check for window dragging if quad exists
-                if self.quad_points and len(self.quad_points) == 4:
+                # Check for window dragging if quad exists (skip if resizing)
+                if self.quad_points and len(self.quad_points) == 4 and not self.resizing_window:
                     if self.is_pinched(thumb_xy, index_xy):
                         if not self.dragging_window:
                             # Check if pinch is near any corner (only top corners for dragging)
-                            for i in [0, 1]:  # top-left and top-right corners
+                            for i in [0, 1, 2, 3]:  # top-left and top-right corners, bottom-right, bottom-left
                                 if self.is_near_corner(thumb_xy, self.quad_points[i]) or self.is_near_corner(index_xy, self.quad_points[i]):
                                     self.dragging_window = True
                                     self.drag_corner_index = i
@@ -290,8 +400,8 @@ class HandTracker:
                             self.drag_corner_index = None
                             self.drag_offset = (0, 0)
 
-                # Only collect quad points if not dragging and no existing quad
-                if not self.dragging_window and self.is_pinched(thumb_xy, index_xy):
+                # Only collect quad points if not dragging, not resizing, and no existing quad
+                if not self.dragging_window and not self.resizing_window and self.is_pinched(thumb_xy, index_xy):
                     quad_points.append(thumb_xy)
                     quad_points.append(index_xy)
 

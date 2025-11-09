@@ -113,14 +113,160 @@ class AppManager:
         frame = cv2.add(frame, warped)
         return frame
 
-    def draw_miniplayer_image(self, track_info, size=(300,120), volume=None):
+    def draw_miniplayer_image(self, track_info, size=(400, 150), volume=None):
+        """Draw a miniplayer with track info and controls."""
         w, h = size  # width, height
-        img = np.ones((h, w, 3), dtype=np.uint8) * 30
-        # buttons are placed for width=300, height ~120
-        cv2.circle(img, (50, 60), 25, (255,255,255), -1)
-        cv2.circle(img, (150,60), 25, (255,255,255), -1)
-        cv2.circle(img, (250,60), 25, (255,255,255), -1)
-        ...
+        
+        # Create background with gradient
+        img = np.ones((h, w, 3), dtype=np.uint8) * 20  # Dark background
+        
+        # Add subtle gradient background
+        for y in range(h):
+            intensity = int(20 + (y / h) * 15)  # Gradient from 20 to 35
+            img[y, :] = [intensity, intensity, intensity]
+        
+        # Add rounded corner effect (simple version)
+        corner_radius = 15
+        cv2.rectangle(img, (0, 0), (w, corner_radius), (0, 0, 0), -1)
+        cv2.rectangle(img, (0, h-corner_radius), (w, h), (0, 0, 0), -1)
+        cv2.rectangle(img, (0, 0), (corner_radius, h), (0, 0, 0), -1)
+        cv2.rectangle(img, (w-corner_radius, 0), (w, h), (0, 0, 0), -1)
+        
+        # Album artwork area (left side)
+        album_size = h - 20  # Leave 10px margin on top/bottom
+        album_x, album_y = 10, 10
+        
+        # Draw album artwork placeholder with modern style
+        cv2.rectangle(img, (album_x, album_y), (album_x + album_size, album_y + album_size), (60, 60, 60), -1)
+        cv2.rectangle(img, (album_x + 2, album_y + 2), (album_x + album_size - 2, album_y + album_size - 2), (80, 80, 80), 2)
+        
+        # Add music note icon in album area
+        center_x, center_y = album_x + album_size // 2, album_y + album_size // 2
+        cv2.circle(img, (center_x, center_y), 20, (150, 150, 150), -1)
+        cv2.putText(img, "♪", (center_x - 8, center_y + 8), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (220, 220, 220), 2)
+        
+        # Track info area (middle section)
+        info_x = album_x + album_size + 20
+        info_width = w - info_x - 120  # Leave space for controls on right
+        
+        # Track title
+        if track_info and 'name' in track_info:
+            title = track_info['name'][:25] + "..." if len(track_info['name']) > 25 else track_info['name']
+        else:
+            title = "No track playing"
+        
+        # Artist name
+        if track_info and 'artist' in track_info:
+            artist = track_info['artist'][:30] + "..." if len(track_info['artist']) > 30 else track_info['artist']
+        else:
+            artist = "Unknown artist"
+        
+        # Draw track info with modern typography
+        cv2.putText(img, title, (info_x, album_y + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.putText(img, artist, (info_x, album_y + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1)
+        
+        # Progress bar with real-time calculation
+        progress_y = album_y + 70
+        progress_width = info_width - 20
+        
+        # Calculate real progress and times
+        current_time = 0
+        total_time = 180  # Default 3:00 if no track info
+        progress = 0.0
+        
+        if track_info:
+            # Get progress from track_info if available
+            if 'progress_ms' in track_info and 'duration_ms' in track_info:
+                current_time = track_info['progress_ms'] // 1000  # Convert to seconds
+                total_time = track_info['duration_ms'] // 1000
+                if total_time > 0:
+                    progress = min(current_time / total_time, 1.0)
+            elif 'progress_percentage' in track_info:
+                progress = track_info['progress_percentage'] / 100.0
+                current_time = int(progress * total_time)
+        
+        # Background progress bar
+        cv2.rectangle(img, (info_x, progress_y), (info_x + progress_width, progress_y + 4), (60, 60, 60), -1)
+        
+        # Filled progress
+        filled_width = int(progress_width * progress)
+        if filled_width > 0:
+            cv2.rectangle(img, (info_x, progress_y), (info_x + filled_width, progress_y + 4), (30, 215, 96), -1)  # Spotify green
+        
+        # Format time strings
+        def format_time(seconds):
+            mins = seconds // 60
+            secs = seconds % 60
+            return f"{mins}:{secs:02d}"
+        
+        current_time_str = format_time(current_time)
+        total_time_str = format_time(total_time)
+        
+        # Time indicators with real values
+        cv2.putText(img, current_time_str, (info_x, progress_y + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
+        cv2.putText(img, total_time_str, (info_x + progress_width - 25, progress_y + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
+        
+        # Control buttons (right side) - modern circular buttons
+        controls_x = w - 110
+        button_y = h // 2
+        button_spacing = 45
+        button_radius = 15
+        
+        # Previous button
+        prev_x = controls_x - button_spacing
+        cv2.circle(img, (prev_x, button_y), button_radius, (70, 70, 70), -1)
+        cv2.circle(img, (prev_x, button_y), button_radius - 1, (90, 90, 90), 2)
+        # Previous icon (triangles)
+        cv2.line(img, (prev_x - 5, button_y), (prev_x - 2, button_y - 5), (220, 220, 220), 2)
+        cv2.line(img, (prev_x - 5, button_y), (prev_x - 2, button_y + 5), (220, 220, 220), 2)
+        cv2.line(img, (prev_x + 1, button_y), (prev_x + 4, button_y - 5), (220, 220, 220), 2)
+        cv2.line(img, (prev_x + 1, button_y), (prev_x + 4, button_y + 5), (220, 220, 220), 2)
+        
+        # Play/Pause button (larger)
+        play_radius = 18
+        cv2.circle(img, (controls_x, button_y), play_radius, (30, 215, 96), -1)  # Spotify green
+        cv2.circle(img, (controls_x, button_y), play_radius - 1, (40, 230, 110), 2)
+        # Play icon (triangle)
+        triangle_points = np.array([[controls_x - 6, button_y - 8], [controls_x - 6, button_y + 8], [controls_x + 6, button_y]], np.int32)
+        cv2.fillPoly(img, [triangle_points], (255, 255, 255))
+        
+        # Next button
+        next_x = controls_x + button_spacing
+        cv2.circle(img, (next_x, button_y), button_radius, (70, 70, 70), -1)
+        cv2.circle(img, (next_x, button_y), button_radius - 1, (90, 90, 90), 2)
+        # Next icon (triangles)
+        cv2.line(img, (next_x - 4, button_y), (next_x - 1, button_y - 5), (220, 220, 220), 2)
+        cv2.line(img, (next_x - 4, button_y), (next_x - 1, button_y + 5), (220, 220, 220), 2)
+        cv2.line(img, (next_x + 2, button_y), (next_x + 5, button_y - 5), (220, 220, 220), 2)
+        cv2.line(img, (next_x + 2, button_y), (next_x + 5, button_y + 5), (220, 220, 220), 2)
+        
+        # Volume indicator (bottom right)
+        if volume is not None:
+            vol_x = w - 60
+            vol_y = h - 25
+            vol_width = 50
+            vol_height = 6
+            
+            # Volume background
+            cv2.rectangle(img, (vol_x, vol_y), (vol_x + vol_width, vol_y + vol_height), (60, 60, 60), -1)
+            
+            # Volume fill
+            vol_fill = int(vol_width * (volume / 100))
+            if volume > 70:
+                vol_color = (50, 50, 255)  # Red for high volume
+            elif volume > 30:
+                vol_color = (50, 200, 255)  # Orange for medium
+            else:
+                vol_color = (50, 255, 50)  # Green for low
+            
+            cv2.rectangle(img, (vol_x, vol_y), (vol_x + vol_fill, vol_y + vol_height), vol_color, -1)
+            
+            # Volume icon
+            cv2.putText(img, "♪", (vol_x - 15, vol_y + 8), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
+            
+            # Volume percentage
+            cv2.putText(img, f"{volume}%", (vol_x + 5, vol_y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (200, 200, 200), 1)
+        
         return img
 
     def draw_app_in_rect(self, frame, rect_points, volume=None, track_info=None):

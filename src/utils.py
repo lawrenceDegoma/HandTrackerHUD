@@ -51,5 +51,8 @@ def get_current_track():
             "name": current["item"]["name"],
             "artist": current["item"]["artists"][0]["name"],
             "album_art": current["item"]["album"]["images"][0]["url"],
+            "progress_ms": current.get("progress_ms", 0),  # Current playback position in ms
+            "duration_ms": current["item"]["duration_ms"],  # Total track duration in ms
+            "is_playing": current.get("is_playing", False)  # Whether track is currently playing
         }
     return None

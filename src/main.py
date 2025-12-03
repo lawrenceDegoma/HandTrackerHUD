@@ -87,6 +87,10 @@ def main():
             tracker.volume_gesture_enabled = not tracker.volume_gesture_enabled
             print("Volume gesture mode:", tracker.volume_gesture_enabled)
 
+        elif key == ord('h'):
+            tracker.show_hand_skeleton = not tracker.show_hand_skeleton
+            print("Hand skeleton display:", tracker.show_hand_skeleton)
+
         # toggle voice listener with 'm'
         elif key == ord('m'):
             tracker.voice_enabled = not tracker.voice_enabled

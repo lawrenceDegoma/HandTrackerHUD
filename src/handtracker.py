@@ -28,6 +28,7 @@ class HandTracker:
         self.hands = self.mp_hands.Hands()
         self.mp_drawing = mp.solutions.drawing_utils
         self.tracing_enabled = False
+        self.show_hand_skeleton = False  # Hand skeleton display off by default
         self.points = []
         self.quad_points = []
         self.quad_active = True
@@ -288,9 +289,10 @@ class HandTracker:
             all_pinches = []
             
             for hand_landmarks in results.multi_hand_landmarks:
-                self.mp_drawing.draw_landmarks(
-                    frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS
-                )
+                if self.show_hand_skeleton:  # Only draw skeleton if enabled
+                    self.mp_drawing.draw_landmarks(
+                        frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS
+                    )
 
                 h, w, _ = frame.shape
                 thumb_tip = hand_landmarks.landmark[4]
@@ -298,8 +300,9 @@ class HandTracker:
                 thumb_xy = (int(thumb_tip.x * w), int(thumb_tip.y * h))
                 index_xy = (int(index_tip.x * w), int(index_tip.y * h))
 
-                cv2.circle(frame, thumb_xy, 8, (255, 0, 0), -1)
-                cv2.circle(frame, index_xy, 8, (0, 255, 0), -1)
+                if self.show_hand_skeleton:  # Only draw finger dots if skeleton is enabled
+                    cv2.circle(frame, thumb_xy, 8, (255, 0, 0), -1)
+                    cv2.circle(frame, index_xy, 8, (0, 255, 0), -1)
 
                 # Store pinch data for resize detection
                 if self.is_pinched(thumb_xy, index_xy):

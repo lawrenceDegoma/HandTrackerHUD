@@ -50,6 +50,7 @@ class HandTracker:
         self.resizing_window = False
         self.resize_corners = []  # list of corner indices being pinched
         self.resize_initial_positions = []  # initial positions of pinched corners
+        self.resize_hand_assignments = {}  # maps hand_id to corner_index
         
         # Close gesture state
         self.close_gesture_start_pos = None
@@ -288,7 +289,7 @@ class HandTracker:
             # Collect all pinch data from all hands for resize detection
             all_pinches = []
             
-            for hand_landmarks in results.multi_hand_landmarks:
+            for hand_idx, hand_landmarks in enumerate(results.multi_hand_landmarks):
                 if self.show_hand_skeleton:  # Only draw skeleton if enabled
                     self.mp_drawing.draw_landmarks(
                         frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS
@@ -304,61 +305,70 @@ class HandTracker:
                     cv2.circle(frame, thumb_xy, 8, (255, 0, 0), -1)
                     cv2.circle(frame, index_xy, 8, (0, 255, 0), -1)
 
-                # Store pinch data for resize detection
+                # Store pinch data for resize detection (include hand index)
                 if self.is_pinched(thumb_xy, index_xy):
                     pinch_center = ((thumb_xy[0] + index_xy[0]) // 2, (thumb_xy[1] + index_xy[1]) // 2)
-                    all_pinches.append((hand_landmarks, thumb_xy, index_xy, pinch_center))
+                    all_pinches.append((hand_idx, hand_landmarks, thumb_xy, index_xy, pinch_center))
 
             # Check for resize gesture (two hands pinching opposite corners)
             if len(all_pinches) == 2 and self.quad_points and len(self.quad_points) == 4:
-                pinch1_center = all_pinches[0][3]
-                pinch2_center = all_pinches[1][3]
+                hand1_idx, hand1_landmarks, thumb1, index1, pinch1_center = all_pinches[0]
+                hand2_idx, hand2_landmarks, thumb2, index2, pinch2_center = all_pinches[1]
                 
-                # Find which corners are being pinched
-                corners_pinched = []
-                for i, corner in enumerate(self.quad_points):
-                    if self.is_near_corner(pinch1_center, corner, threshold=50):
-                        corners_pinched.append((i, pinch1_center))
-                    elif self.is_near_corner(pinch2_center, corner, threshold=50):
-                        corners_pinched.append((i, pinch2_center))
-                
-                # Check if we have opposite corners being pinched
-                if len(corners_pinched) == 2:
-                    corner1_idx = corners_pinched[0][0]
-                    corner2_idx = corners_pinched[1][0]
+                if not self.resizing_window:
+                    # Starting new resize - establish hand-to-corner assignments
+                    corners_pinched = []
+                    for i, corner in enumerate(self.quad_points):
+                        if self.is_near_corner(pinch1_center, corner, threshold=50):
+                            corners_pinched.append((i, hand1_idx, pinch1_center))
+                        elif self.is_near_corner(pinch2_center, corner, threshold=50):
+                            corners_pinched.append((i, hand2_idx, pinch2_center))
                     
-                    if self.are_opposite_corners(corner1_idx, corner2_idx):
-                        if not self.resizing_window:
-                            # Start resizing
+                    # Check if we have opposite corners being pinched
+                    if len(corners_pinched) == 2:
+                        corner1_idx, hand1_id, pos1 = corners_pinched[0]
+                        corner2_idx, hand2_id, pos2 = corners_pinched[1]
+                        
+                        if self.are_opposite_corners(corner1_idx, corner2_idx):
+                            # Start resizing and assign hands to corners
+                            # Stop any existing drag operation first
+                            if self.dragging_window:
+                                self.dragging_window = False
+                                self.drag_corner_index = None
+                                self.drag_offset = (0, 0)
+                            
                             self.resizing_window = True
                             self.resize_corners = [corner1_idx, corner2_idx]
-                            print(f"Started resizing with corners {corner1_idx} and {corner2_idx}")
-                        else:
-                            # Continue resizing
-                            corner_positions = [
-                                (corners_pinched[0][0], corners_pinched[0][1]),
-                                (corners_pinched[1][0], corners_pinched[1][1])
-                            ]
-                            self.update_quad_resize(corner_positions)
-                    else:
-                        # Not opposite corners - stop resizing
-                        if self.resizing_window:
-                            self.resizing_window = False
-                            self.resize_corners = []
-                            print("Stopped resizing - corners not opposite")
+                            self.resize_hand_assignments = {
+                                hand1_id: corner1_idx,
+                                hand2_id: corner2_idx
+                            }
                 else:
-                    # Not pinching corners - stop resizing
-                    if self.resizing_window:
+                    # Continue resizing - use established hand assignments
+                    if hand1_idx in self.resize_hand_assignments and hand2_idx in self.resize_hand_assignments:
+                        # Map current hand positions to their assigned corners
+                        corner1_idx = self.resize_hand_assignments[hand1_idx]
+                        corner2_idx = self.resize_hand_assignments[hand2_idx]
+                        
+                        corner_positions = [
+                            (corner1_idx, pinch1_center),
+                            (corner2_idx, pinch2_center)
+                        ]
+                        self.update_quad_resize(corner_positions)
+                    else:
+                        # Hand assignments lost - stop resizing
                         self.resizing_window = False
                         self.resize_corners = []
+                        self.resize_hand_assignments = {}
             else:
                 # Not enough pinches or no quad - stop resizing
                 if self.resizing_window:
                     self.resizing_window = False
                     self.resize_corners = []
+                    self.resize_hand_assignments = {}
 
             # Process each hand for other gestures (but skip if resizing)
-            for hand_landmarks in results.multi_hand_landmarks:
+            for hand_idx, hand_landmarks in enumerate(results.multi_hand_landmarks):
                 h, w, _ = frame.shape
                 thumb_tip = hand_landmarks.landmark[4]
                 index_tip = hand_landmarks.landmark[8]
@@ -380,9 +390,21 @@ class HandTracker:
                 # Check for window dragging if quad exists (skip if resizing)
                 if self.quad_points and len(self.quad_points) == 4 and not self.resizing_window:
                     if self.is_pinched(thumb_xy, index_xy):
-                        if not self.dragging_window:
-                            # Check if pinch is near any corner (only top corners for dragging)
-                            for i in [0, 1, 2, 3]:  # top-left and top-right corners, bottom-right, bottom-left
+                        # Check if this might be part of a two-hand resize gesture
+                        # Count how many hands are currently pinching near corners
+                        hands_near_corners = 0
+                        for pinch_data in all_pinches:
+                            pinch_hand_idx, _, _, _, pinch_center = pinch_data
+                            for corner in self.quad_points:
+                                if self.is_near_corner(pinch_center, corner, threshold=50):
+                                    hands_near_corners += 1
+                                    break
+                        
+                        # Only allow drag if this is the only hand near a corner
+                        # This prevents drag from interfering with potential resize gestures
+                        if hands_near_corners == 1 and not self.dragging_window:
+                            # Check if pinch is near any corner
+                            for i in [0, 1, 2, 3]:  # all corners
                                 if self.is_near_corner(thumb_xy, self.quad_points[i]) or self.is_near_corner(index_xy, self.quad_points[i]):
                                     self.dragging_window = True
                                     self.drag_corner_index = i
@@ -391,11 +413,17 @@ class HandTracker:
                                     corner = self.quad_points[i]
                                     self.drag_offset = (pinch_center[0] - corner[0], pinch_center[1] - corner[1])
                                     break
-                        else:
-                            # Continue dragging - move the quad
+                        elif self.dragging_window and hands_near_corners == 1:
+                            # Continue dragging only if we're still the only hand
                             pinch_center = ((thumb_xy[0] + index_xy[0]) // 2, (thumb_xy[1] + index_xy[1]) // 2)
                             new_corner_pos = (pinch_center[0] - self.drag_offset[0], pinch_center[1] - self.drag_offset[1])
                             self.update_quad_position(new_corner_pos, self.drag_corner_index)
+                        else:
+                            # Multiple hands detected - stop dragging to allow resize
+                            if self.dragging_window:
+                                self.dragging_window = False
+                                self.drag_corner_index = None
+                                self.drag_offset = (0, 0)
                     else:
                         # Not pinching - stop dragging
                         if self.dragging_window:

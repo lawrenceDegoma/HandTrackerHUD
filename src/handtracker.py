@@ -25,7 +25,14 @@ class HandTracker:
 
     def __init__(self):
         self.mp_hands = mp.solutions.hands
-        self.hands = self.mp_hands.Hands()
+        # Optimize MediaPipe settings for 60 FPS performance
+        self.hands = self.mp_hands.Hands(
+            static_image_mode=False,        # Process video stream
+            max_num_hands=2,                # Limit to 2 hands for performance
+            min_detection_confidence=0.7,   # Higher confidence for faster processing
+            min_tracking_confidence=0.5,    # Lower tracking confidence for speed
+            model_complexity=0              # Use fastest model (0=lite, 1=full)
+        )
         self.mp_drawing = mp.solutions.drawing_utils
         self.tracing_enabled = False
         self.show_hand_skeleton = False  # Hand skeleton display off by default
@@ -212,7 +219,7 @@ class HandTracker:
             
         return False
 
-    def is_pinched(self, thumb_tip, index_tip, threshold=100):
+    def is_pinched(self, thumb_tip, index_tip, threshold=50):
         x1, y1 = thumb_tip
         x2, y2 = index_tip
         return math.hypot(x2 - x1, y2 - y1) < threshold
@@ -390,19 +397,7 @@ class HandTracker:
                 # Check for window dragging if quad exists (skip if resizing)
                 if self.quad_points and len(self.quad_points) == 4 and not self.resizing_window:
                     if self.is_pinched(thumb_xy, index_xy):
-                        # Check if this might be part of a two-hand resize gesture
-                        # Count how many hands are currently pinching near corners
-                        hands_near_corners = 0
-                        for pinch_data in all_pinches:
-                            pinch_hand_idx, _, _, _, pinch_center = pinch_data
-                            for corner in self.quad_points:
-                                if self.is_near_corner(pinch_center, corner, threshold=50):
-                                    hands_near_corners += 1
-                                    break
-                        
-                        # Only allow drag if this is the only hand near a corner
-                        # This prevents drag from interfering with potential resize gestures
-                        if hands_near_corners == 1 and not self.dragging_window:
+                        if not self.dragging_window:
                             # Check if pinch is near any corner
                             for i in [0, 1, 2, 3]:  # all corners
                                 if self.is_near_corner(thumb_xy, self.quad_points[i]) or self.is_near_corner(index_xy, self.quad_points[i]):
@@ -413,17 +408,11 @@ class HandTracker:
                                     corner = self.quad_points[i]
                                     self.drag_offset = (pinch_center[0] - corner[0], pinch_center[1] - corner[1])
                                     break
-                        elif self.dragging_window and hands_near_corners == 1:
-                            # Continue dragging only if we're still the only hand
+                        else:
+                            # Continue dragging - move the quad
                             pinch_center = ((thumb_xy[0] + index_xy[0]) // 2, (thumb_xy[1] + index_xy[1]) // 2)
                             new_corner_pos = (pinch_center[0] - self.drag_offset[0], pinch_center[1] - self.drag_offset[1])
                             self.update_quad_position(new_corner_pos, self.drag_corner_index)
-                        else:
-                            # Multiple hands detected - stop dragging to allow resize
-                            if self.dragging_window:
-                                self.dragging_window = False
-                                self.drag_corner_index = None
-                                self.drag_offset = (0, 0)
                     else:
                         # Not pinching - stop dragging
                         if self.dragging_window:

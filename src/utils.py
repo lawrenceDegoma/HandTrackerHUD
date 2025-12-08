@@ -17,22 +17,43 @@ sp = spotipy.Spotify(
 
 
 def toggle_play_pause():
-    current = sp.current_playback()
-    if current and current["is_playing"]:
-        sp.pause_playback()
-    else:
-        sp.start_playback()
+    try:
+        current = sp.current_playback()
+        if current and current["is_playing"]:
+            sp.pause_playback()
+        else:
+            sp.start_playback()
+    except spotipy.SpotifyException as e:
+        if "NO_ACTIVE_DEVICE" in str(e):
+            print("No active Spotify device found. Please open Spotify on a device first.")
+        else:
+            print(f"Spotify error: {e}")
+    except Exception as e:
+        print(f"Unexpected error controlling playback: {e}")
 
 
 def next_track():
-    sp.next_track()
+    try:
+        sp.next_track()
+    except spotipy.SpotifyException as e:
+        if "NO_ACTIVE_DEVICE" in str(e):
+            print("No active Spotify device found. Please open Spotify on a device first.")
+        else:
+            print(f"Error skipping track: {e}")
+    except Exception as e:
+        print(f"Unexpected error skipping track: {e}")
 
 
 def previous_track():
     try:
         sp.previous_track()
     except spotipy.SpotifyException as e:
-        print(f"Error: no previous track available")
+        if "NO_ACTIVE_DEVICE" in str(e):
+            print("No active Spotify device found. Please open Spotify on a device first.")
+        else:
+            print(f"Error going to previous track: {e}")
+    except Exception as e:
+        print(f"Unexpected error going to previous track: {e}")
 
 
 def set_volume(vol):
@@ -45,14 +66,23 @@ def set_volume(vol):
 
 
 def get_current_track():
-    current = sp.current_playback()
-    if current and current["item"]:
-        return {
-            "name": current["item"]["name"],
-            "artist": current["item"]["artists"][0]["name"],
-            "album_art": current["item"]["album"]["images"][0]["url"],
-            "progress_ms": current.get("progress_ms", 0),  # Current playback position in ms
-            "duration_ms": current["item"]["duration_ms"],  # Total track duration in ms
-            "is_playing": current.get("is_playing", False)  # Whether track is currently playing
-        }
+    try:
+        current = sp.current_playback()
+        if current and current["item"]:
+            return {
+                "name": current["item"]["name"],
+                "artist": current["item"]["artists"][0]["name"],
+                "album_art": current["item"]["album"]["images"][0]["url"],
+                "progress_ms": current.get("progress_ms", 0),  # Current playback position in ms
+                "duration_ms": current["item"]["duration_ms"],  # Total track duration in ms
+                "is_playing": current.get("is_playing", False)  # Whether track is currently playing
+            }
+    except spotipy.SpotifyException as e:
+        if "NO_ACTIVE_DEVICE" in str(e):
+            print("No active Spotify device found for track info.")
+        else:
+            print(f"Error getting track info: {e}")
+    except Exception as e:
+        print(f"Unexpected error getting track info: {e}")
+    
     return None

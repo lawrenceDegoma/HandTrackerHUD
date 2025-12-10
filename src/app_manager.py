@@ -386,8 +386,8 @@ class AppManager:
         self.draw_scrolling_text(img, artist, "artist", info_x, album_y + 50, artist_max_width, 0.5, (180, 180, 180), 1)
         
         # Progress bar with real-time calculation
-        progress_y = album_y + 70
-        progress_width = info_width - 20
+        progress_y = album_y + 95  # Moved down from 70 to 85
+        progress_width = info_width - 20  # Reduced to avoid overlap with control buttons
         
         # Calculate real progress and times
         current_time = 0
@@ -455,11 +455,11 @@ class AppManager:
         cv2.circle(img, (next_x, button_y), button_radius, (70, 70, 70), -1)
         cv2.circle(img, (next_x, button_y), button_radius - 1, (90, 90, 90), 2)
         # Next icon (triangles)
-        cv2.line(img, (next_x - 4, button_y), (next_x - 1, button_y - 5), (220, 220, 220), 2)
-        cv2.line(img, (next_x - 4, button_y), (next_x - 1, button_y + 5), (220, 220, 220), 2)
-        cv2.line(img, (next_x + 2, button_y), (next_x + 5, button_y - 5), (220, 220, 220), 2)
-        cv2.line(img, (next_x + 2, button_y), (next_x + 5, button_y + 5), (220, 220, 220), 2)
-        
+        cv2.line(img, (next_x + 5, button_y), (next_x + 2, button_y - 5), (220, 220, 220), 2)
+        cv2.line(img, (next_x + 5, button_y), (next_x + 2, button_y + 5), (220, 220, 220), 2)
+        cv2.line(img, (next_x - 1, button_y), (next_x - 4, button_y - 5), (220, 220, 220), 2)
+        cv2.line(img, (next_x -1, button_y), (next_x - 4, button_y + 5), (220, 220, 220), 2)
+
         # Volume indicator (bottom right)
         if volume is not None:
             vol_x = w - 60

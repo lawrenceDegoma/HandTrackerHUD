@@ -91,6 +91,7 @@ def main():
         try:
             debug_lines = [
                 f"FPS: {last_fps_display:.1f}",
+                f"Voice: {'ON' if tracker.voice_enabled else 'OFF'} (Say 'Hey computer')",
                 f"spawned_app: {tracker.spawned_app}",
                 f"app_manager: {app_manager.current_app}",
                 f"quad_pts: {len(tracker.quad_points)}",

@@ -38,6 +38,7 @@ class HandTracker:
         self.show_hand_skeleton = False  # Hand skeleton display off by default
         self.points = []
         self.quad_points = []
+        self.all_app_quads = []  # List of {quad_points: [...], app: 'Spotify'} for multiple windows
         self.quad_active = True
         self.pinched_start_time = None
         self.last_track_info = None
@@ -433,34 +434,47 @@ class HandTracker:
                     cv2.circle(frame, (x, y), 5, (0, 0, 255), -1)
 
             if len(quad_points) == 4:
-                # Only process pinch quad creation if no existing quad is set
-                if not self.quad_points or len(self.quad_points) != 4:
-                    if self.pinched_start_time is None:
-                        self.pinched_start_time = time.time()
+                # Allow creating multiple quads
+                if self.pinched_start_time is None:
+                    self.pinched_start_time = time.time()
 
-                    live_rect = self.get_rectangle_from_points(quad_points)
-                    for i in range(4):
-                        cv2.line(
-                            frame, live_rect[i], live_rect[(i + 1) % 4], (0, 255, 255), 3
-                        )
+                live_rect = self.get_rectangle_from_points(quad_points)
+                for i in range(4):
+                    cv2.line(
+                        frame, live_rect[i], live_rect[(i + 1) % 4], (0, 255, 255), 3
+                    )
 
-                    # If a spawn request exists, detach immediately regardless of voice_enabled.
-                    if self.spawned_app is not None:
-                        self.quad_points = live_rect
-                        self.quad_active = True
-                    elif not self.quad_points or len(self.quad_points) != 4:
-                        # Only allow creating a new quad if none exists yet.
-                        # Fallback behavior: if not spawning via request, require 2s hold to detach.
-                        if self.pinched_start_time is not None and time.time() - self.pinched_start_time >= 2.0:
-                            self.quad_points = live_rect
-                            self.quad_active = True
-                            # If voice controls are disabled, auto-request a Spotify miniplayer so
-                            # the main loop / AppManager will spawn it without needing voice input.
-                            if not self.voice_enabled and self.spawned_app is None:
-                                self.spawned_app = 'Spotify'
-                else:
-                    # Reset pinch timer if quad already exists - don't process new pinches
-                    self.pinched_start_time = None
+                # If a spawn request exists, create new quad immediately 
+                if self.spawned_app is not None:
+                    # Create new quad and add to list
+                    new_quad = {
+                        'quad_points': live_rect,
+                        'app': self.spawned_app
+                    }
+                    self.all_app_quads.append(new_quad)
+                    
+                    # Set as current active quad for backward compatibility
+                    self.quad_points = live_rect
+                    self.quad_active = True
+                    print(f"Created new quad for {self.spawned_app}")
+                    self.spawned_app = None  # Clear the request
+                    
+                elif self.pinched_start_time is not None and time.time() - self.pinched_start_time >= 2.0:
+                    # Fallback: 2 second hold creates a default quad
+                    app_name = 'Spotify' if not self.voice_enabled else None
+                    new_quad = {
+                        'quad_points': live_rect,
+                        'app': app_name
+                    }
+                    self.all_app_quads.append(new_quad)
+                    
+                    self.quad_points = live_rect
+                    self.quad_active = True
+                    print(f"Created new quad for {app_name}")
+                    
+                    # Auto-request Spotify if voice disabled
+                    if not self.voice_enabled and self.spawned_app is None:
+                        self.spawned_app = 'Spotify'
             else:
                 self.pinched_start_time = None
 
@@ -573,3 +587,19 @@ class HandTracker:
         self.quad_active = True
         # Keep existing quad_points if present; user can form the quad first
         print(f"Spawn requested for: {app_name}")
+
+    def get_all_app_regions(self):
+        """Get all app quads formatted for AppManager multi-app rendering."""
+        if not self.all_app_quads:
+            return []
+        
+        app_regions = []
+        for quad_data in self.all_app_quads:
+            if quad_data['app'] and len(quad_data['quad_points']) == 4:
+                app_regions.append({
+                    'app_id': quad_data['app'].lower(),
+                    'rect_points': quad_data['quad_points'],
+                    'opacity': 0.9
+                })
+        
+        return app_regions

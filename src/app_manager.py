@@ -6,7 +6,7 @@ command handling, and rendering through specialized components.
 """
 
 from utils import get_current_track
-from components import SpotifyMiniplayer, WindowCapture, FrameOverlay
+from app_manager_components import SpotifyMiniplayer, WindowCapture, FrameOverlay
 
 
 class AppManager:

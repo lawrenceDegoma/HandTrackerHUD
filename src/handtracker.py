@@ -1,20 +1,20 @@
+"""
+Hand Tracker
+
+Main hand tracking system that coordinates gesture recognition,
+quad management, and volume control through specialized components.
+"""
+
 import cv2
 import mediapipe as mp
-import math
 import time
-import numpy as np
-from utils import (
-    toggle_play_pause,
-    next_track,
-    previous_track,
-    get_current_track,
-    set_volume,
-)
-import threading
-import queue
+from utils import get_current_track, toggle_play_pause, next_track, previous_track
+from hand_tracker_components import GestureRecognizer, CloseGestureDetector, QuadManager, VolumeController
 
 
 class HandTracker:
+    """Main hand tracking system that coordinates all gesture recognition."""
+    
     # Updated button positions for the new modern miniplayer (400x150) with button_spacing=45
     MINIPLAYER_BUTTONS = {
         "prev": (245, 75),    # Previous button (controls_x - button_spacing = 290 - 45)
@@ -34,48 +34,64 @@ class HandTracker:
             model_complexity=0              # Use fastest model (0=lite, 1=full)
         )
         self.mp_drawing = mp.solutions.drawing_utils
+        
+        # Initialize specialized components
+        self.gesture_recognizer = GestureRecognizer()
+        self.close_gesture_detector = CloseGestureDetector()
+        self.quad_manager = QuadManager()
+        self.volume_controller = VolumeController()
+        
+        # Display and tracking settings
         self.tracing_enabled = False
         self.show_hand_skeleton = False  # Hand skeleton display off by default
         self.points = []
-        self.quad_points = []
-        self.all_app_quads = []  # List of {quad_points: [...], app: 'Spotify'} for multiple windows
-        self.quad_active = True
-        self.pinched_start_time = None
-        self.last_track_info = None
-        self.last_track_update = 0
-        self.volume_gesture_enabled = False
-        self.last_volume_set = 0
-        self.current_volume = None
+        
+        # App management
         self.spawned_app = None  # name of app/miniplayer requested by voice or UI
         self.voice_enabled = True  # voice controls enabled by default
         
-        # Window dragging state
-        self.dragging_window = False
-        self.drag_corner_index = None  # which corner (0-3) is being dragged
-        self.drag_offset = (0, 0)  # offset from corner to pinch point
+        # Track info caching
+        self.last_track_info = None
+        self.last_track_update = 0
         
-        # Window resizing state
-        self.resizing_window = False
-        self.resize_corners = []  # list of corner indices being pinched
-        self.resize_initial_positions = []  # initial positions of pinched corners
-        self.resize_hand_assignments = {}  # maps hand_id to corner_index
-        
-        # Close gesture state
-        self.close_gesture_start_pos = None
-        self.close_gesture_start_time = None
-        self.close_gesture_threshold = 17  # degrees to rotate wrist
+        # Gesture state
         self.gesture_closed_window = False  # flag for main.py to detect gesture close
-        self.close_gesture_start_angle = None
 
-        # Volume worker: non-blocking updates to Spotify
-        self._volume_queue = queue.Queue()
-        self._volume_worker_stop = threading.Event()
-        self._volume_worker_thread = threading.Thread(
-            target=self._volume_worker, daemon=True
-        )
-        self._volume_worker_thread.start()
+    # Properties for backward compatibility
+    @property
+    def quad_points(self):
+        return self.quad_manager.quad_points
+    
+    @quad_points.setter
+    def quad_points(self, value):
+        self.quad_manager.quad_points = value
+    
+    @property
+    def quad_active(self):
+        return self.quad_manager.quad_active
+    
+    @quad_active.setter
+    def quad_active(self, value):
+        self.quad_manager.quad_active = value
+    
+    @property
+    def all_app_quads(self):
+        return self.quad_manager.all_app_quads
+    
+    @property
+    def volume_gesture_enabled(self):
+        return self.volume_controller.volume_gesture_enabled
+    
+    @volume_gesture_enabled.setter
+    def volume_gesture_enabled(self, value):
+        self.volume_controller.volume_gesture_enabled = value
+    
+    @property
+    def current_volume(self):
+        return self.volume_controller.current_volume
 
     def get_cached_track_info(self):
+        """Get cached track info with rate limiting."""
         now = time.time()
         # Update every 1 second
         if now - self.last_track_update > 1:
@@ -84,158 +100,15 @@ class HandTracker:
         return self.last_track_info
 
     def screen_to_miniplayer(self, pt, rect_points, miniplayer_size=(400, 150)):
-        src_pts = np.float32(rect_points)
-        width, height = miniplayer_size
-        dst_pts = np.float32(
-            [
-                [0, 0],
-                [width, 0],
-                [width, height],
-                [0, height],
-            ]
-        )
-        matrix = cv2.getPerspectiveTransform(src_pts, dst_pts)
-        pt_homog = np.array([[pt]], dtype=np.float32)
-        pt_transformed = cv2.perspectiveTransform(pt_homog, matrix)
-        x, y = pt_transformed[0][0]
-        return int(x), int(y)
-
-    def is_near_corner(self, point, corner, threshold=50):
-        """Check if a point is near a corner of the quad."""
-        x1, y1 = point
-        x2, y2 = corner
-        return math.hypot(x2 - x1, y2 - y1) < threshold
-
-    def are_opposite_corners(self, corner1, corner2):
-        """Check if two corners are opposite (diagonal) to each other."""
-        # Corners: 0=top-left, 1=top-right, 2=bottom-right, 3=bottom-left
-        opposite_pairs = [(0, 2), (1, 3)]  # (top-left, bottom-right), (top-right, bottom-left)
-        return (corner1, corner2) in opposite_pairs or (corner2, corner1) in opposite_pairs
-
-    def update_quad_resize(self, corner_positions):
-        """Update quad size by moving opposite corners."""
-        if not self.quad_points or len(self.quad_points) != 4 or len(corner_positions) != 2:
-            return
-        
-        corner1_idx, corner1_pos = corner_positions[0]
-        corner2_idx, corner2_pos = corner_positions[1]
-        
-        # Update the quad points with new corner positions
-        new_quad = list(self.quad_points)
-        new_quad[corner1_idx] = corner1_pos
-        new_quad[corner2_idx] = corner2_pos
-        
-        # For opposite corners, we need to update the other two corners to maintain rectangle shape
-        if self.are_opposite_corners(corner1_idx, corner2_idx):
-            if corner1_idx == 0 and corner2_idx == 2:  # top-left and bottom-right
-                new_quad[1] = (corner2_pos[0], corner1_pos[1])  # top-right
-                new_quad[3] = (corner1_pos[0], corner2_pos[1])  # bottom-left
-            elif corner1_idx == 1 and corner2_idx == 3:  # top-right and bottom-left
-                new_quad[0] = (corner2_pos[0], corner1_pos[1])  # top-left
-                new_quad[2] = (corner1_pos[0], corner2_pos[1])  # bottom-right
-            elif corner1_idx == 2 and corner2_idx == 0:  # bottom-right and top-left
-                new_quad[1] = (corner1_pos[0], corner2_pos[1])  # top-right
-                new_quad[3] = (corner2_pos[0], corner1_pos[1])  # bottom-left
-            elif corner1_idx == 3 and corner2_idx == 1:  # bottom-left and top-right
-                new_quad[0] = (corner1_pos[0], corner2_pos[1])  # top-left
-                new_quad[2] = (corner2_pos[0], corner1_pos[1])  # bottom-right
-        
-        self.quad_points = new_quad
-
-    def update_quad_position(self, new_corner_pos, corner_index):
-        """Update quad position by moving one corner and adjusting the rectangle."""
-        if not self.quad_points or len(self.quad_points) != 4:
-            return
-        
-        # Get current quad as rectangle (maintain rectangular shape)
-        old_corner = self.quad_points[corner_index]
-        dx = new_corner_pos[0] - old_corner[0]
-        dy = new_corner_pos[1] - old_corner[1]
-        
-        # Move the entire rectangle by the delta
-        new_quad = []
-        for corner in self.quad_points:
-            new_quad.append((corner[0] + dx, corner[1] + dy))
-        
-        self.quad_points = new_quad
-
-    def get_wrist_angle(self, hand_landmarks):
-        """Calculate the angle of the wrist based on hand orientation."""
-        # Use wrist (0) and middle finger base (9) to determine hand orientation
-        wrist = hand_landmarks.landmark[0]
-        middle_base = hand_landmarks.landmark[9]
-        
-        dx = middle_base.x - wrist.x
-        dy = middle_base.y - wrist.y
-        
-        # Calculate angle in degrees
-        angle = math.degrees(math.atan2(dy, dx))
-        return angle
-
-    def check_close_gesture(self, hand_landmarks, frame_shape):
-        """Check for wrist rotation gesture from top-right corner."""
-        if not self.quad_points or len(self.quad_points) != 4:
-            return False
-            
-        h, w, _ = frame_shape
-        index_tip = hand_landmarks.landmark[8]
-        
-        # Position of index finger
-        finger_x = int(index_tip.x * w)
-        finger_y = int(index_tip.y * h)
-        current_pos = (finger_x, finger_y)
-        
-        # Check if near top-right corner of quad
-        top_right_corner = self.quad_points[1]
-        is_near = self.is_near_corner(current_pos, top_right_corner, threshold=150)
-        
-        if not is_near:
-            self.close_gesture_start_pos = None
-            self.close_gesture_start_time = None
-            self.close_gesture_start_angle = None
-            return False
-        
-        # Get current wrist angle
-        current_angle = self.get_wrist_angle(hand_landmarks)
-        
-        # Start tracking when hand is positioned at corner
-        if self.close_gesture_start_angle is None:
-            self.close_gesture_start_angle = current_angle
-            self.close_gesture_start_pos = current_pos
-            self.close_gesture_start_time = time.time()
-            return False
-        
-        # Check rotation amount
-        angle_diff = abs(current_angle - self.close_gesture_start_angle)
-        # Handle angle wraparound (e.g., -170 to 170 is 20 degrees, not 340)
-        if angle_diff > 180:
-            angle_diff = 360 - angle_diff
-            
-        # If rotated enough, close the window
-        if angle_diff >= self.close_gesture_threshold:
-            self.close_gesture_start_pos = None
-            self.close_gesture_start_time = None
-            self.close_gesture_start_angle = None
-            return True
-            
-        return False
-
-    def is_pinched(self, thumb_tip, index_tip, threshold=50):
-        x1, y1 = thumb_tip
-        x2, y2 = index_tip
-        return math.hypot(x2 - x1, y2 - y1) < threshold
-
-    def get_rectangle_from_points(self, points):
-        xs = [p[0] for p in points]
-        ys = [p[1] for p in points]
-        left, right = min(xs), max(xs)
-        top, bottom = min(ys), max(ys)
-        return [(left, top), (right, top), (right, bottom), (left, bottom)]
+        """Transform screen coordinates to miniplayer coordinates."""
+        return self.gesture_recognizer.screen_to_miniplayer(pt, rect_points, miniplayer_size)
 
     def draw_window_in_rectangle(self, frame, rect_points, content_img):
+        """Legacy method for drawing content in rectangle."""
         if content_img is None:
             return frame
         h, w, _ = content_img.shape
+        import numpy as np
         src_pts = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
         dst_pts = np.float32(rect_points)
         matrix = cv2.getPerspectiveTransform(src_pts, dst_pts)
@@ -248,47 +121,8 @@ class HandTracker:
         frame = cv2.add(frame, warped)
         return frame
 
-    def _enqueue_volume(self, volume: int):
-        """Enqueue a volume request. The worker collapses multiple pending requests to the latest value."""
-        try:
-            # put latest volume into queue without blocking
-            self._volume_queue.put_nowait(int(volume))
-        except queue.Full:
-            # if full (unlikely) replace by draining and adding
-            with self._volume_queue.mutex:
-                self._volume_queue.queue.clear()
-            self._volume_queue.put(int(volume))
-
-    def _volume_worker(self):
-        """Worker thread: take latest volume requests, collapse them, and call set_volume() with rate limiting."""
-        min_interval = 0.5  # seconds between actual API calls
-        last_call = 0
-        while not self._volume_worker_stop.is_set():
-            try:
-                # block until at least one value is available
-                vol = self._volume_queue.get(timeout=0.1)
-            except queue.Empty:
-                continue
-            # drain queue to get the latest requested volume
-            latest = vol
-            try:
-                while True:
-                    latest = self._volume_queue.get_nowait()
-            except queue.Empty:
-                pass
-            # rate limit
-            now = time.time()
-            wait = max(0, min_interval - (now - last_call))
-            if wait > 0:
-                time.sleep(wait)
-            try:
-                set_volume(latest)
-            except Exception:
-                # swallow exceptions to avoid crashing worker
-                pass
-            last_call = time.time()
-
     def process_frame(self, frame):
+        """Main frame processing method that coordinates all gesture recognition."""
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = self.hands.process(frame_rgb)
         quad_points = []
@@ -314,66 +148,12 @@ class HandTracker:
                     cv2.circle(frame, index_xy, 8, (0, 255, 0), -1)
 
                 # Store pinch data for resize detection (include hand index)
-                if self.is_pinched(thumb_xy, index_xy):
+                if self.gesture_recognizer.is_pinched(thumb_xy, index_xy):
                     pinch_center = ((thumb_xy[0] + index_xy[0]) // 2, (thumb_xy[1] + index_xy[1]) // 2)
                     all_pinches.append((hand_idx, hand_landmarks, thumb_xy, index_xy, pinch_center))
 
-            # Check for resize gesture (two hands pinching opposite corners)
-            if len(all_pinches) == 2 and self.quad_points and len(self.quad_points) == 4:
-                hand1_idx, hand1_landmarks, thumb1, index1, pinch1_center = all_pinches[0]
-                hand2_idx, hand2_landmarks, thumb2, index2, pinch2_center = all_pinches[1]
-                
-                if not self.resizing_window:
-                    # Starting new resize - establish hand-to-corner assignments
-                    corners_pinched = []
-                    for i, corner in enumerate(self.quad_points):
-                        if self.is_near_corner(pinch1_center, corner, threshold=50):
-                            corners_pinched.append((i, hand1_idx, pinch1_center))
-                        elif self.is_near_corner(pinch2_center, corner, threshold=50):
-                            corners_pinched.append((i, hand2_idx, pinch2_center))
-                    
-                    # Check if we have opposite corners being pinched
-                    if len(corners_pinched) == 2:
-                        corner1_idx, hand1_id, pos1 = corners_pinched[0]
-                        corner2_idx, hand2_id, pos2 = corners_pinched[1]
-                        
-                        if self.are_opposite_corners(corner1_idx, corner2_idx):
-                            # Start resizing and assign hands to corners
-                            # Stop any existing drag operation first
-                            if self.dragging_window:
-                                self.dragging_window = False
-                                self.drag_corner_index = None
-                                self.drag_offset = (0, 0)
-                            
-                            self.resizing_window = True
-                            self.resize_corners = [corner1_idx, corner2_idx]
-                            self.resize_hand_assignments = {
-                                hand1_id: corner1_idx,
-                                hand2_id: corner2_idx
-                            }
-                else:
-                    # Continue resizing - use established hand assignments
-                    if hand1_idx in self.resize_hand_assignments and hand2_idx in self.resize_hand_assignments:
-                        # Map current hand positions to their assigned corners
-                        corner1_idx = self.resize_hand_assignments[hand1_idx]
-                        corner2_idx = self.resize_hand_assignments[hand2_idx]
-                        
-                        corner_positions = [
-                            (corner1_idx, pinch1_center),
-                            (corner2_idx, pinch2_center)
-                        ]
-                        self.update_quad_resize(corner_positions)
-                    else:
-                        # Hand assignments lost - stop resizing
-                        self.resizing_window = False
-                        self.resize_corners = []
-                        self.resize_hand_assignments = {}
-            else:
-                # Not enough pinches or no quad - stop resizing
-                if self.resizing_window:
-                    self.resizing_window = False
-                    self.resize_corners = []
-                    self.resize_hand_assignments = {}
+            # Handle resize gestures (two hands pinching opposite corners)
+            self._handle_resize_gestures(all_pinches)
 
             # Process each hand for other gestures (but skip if resizing)
             for hand_idx, hand_landmarks in enumerate(results.multi_hand_landmarks):
@@ -383,223 +163,220 @@ class HandTracker:
                 thumb_xy = (int(thumb_tip.x * w), int(thumb_tip.y * h))
                 index_xy = (int(index_tip.x * w), int(index_tip.y * h))
 
-                # Check for close gesture (two-finger swipe left from top-right)
-                if self.quad_points and len(self.quad_points) == 4:
-                    if self.check_close_gesture(hand_landmarks, frame.shape):
+                # Check for close gesture
+                if self.quad_manager.quad_points and len(self.quad_manager.quad_points) == 4:
+                    if self.close_gesture_detector.check_close_gesture(hand_landmarks, self.quad_manager.quad_points, frame.shape):
                         # Close the window
-                        self.quad_points = []
-                        self.quad_active = False
+                        self.quad_manager.quad_points = []
+                        self.quad_manager.quad_active = False
                         self.spawned_app = None
-                        # Set a flag that main.py can use to notify AppManager
                         self.gesture_closed_window = True
                         print("Window closed by gesture")
-                        continue  # Skip other gesture processing for this hand
+                        continue
 
-                # Check for window dragging if quad exists (skip if resizing)
-                if self.quad_points and len(self.quad_points) == 4 and not self.resizing_window:
-                    if self.is_pinched(thumb_xy, index_xy):
-                        if not self.dragging_window:
-                            # Check if pinch is near any corner
-                            for i in [0, 1, 2, 3]:  # all corners
-                                if self.is_near_corner(thumb_xy, self.quad_points[i]) or self.is_near_corner(index_xy, self.quad_points[i]):
-                                    self.dragging_window = True
-                                    self.drag_corner_index = i
-                                    # Calculate offset from corner to pinch center
-                                    pinch_center = ((thumb_xy[0] + index_xy[0]) // 2, (thumb_xy[1] + index_xy[1]) // 2)
-                                    corner = self.quad_points[i]
-                                    self.drag_offset = (pinch_center[0] - corner[0], pinch_center[1] - corner[1])
-                                    break
-                        else:
-                            # Continue dragging - move the quad
-                            pinch_center = ((thumb_xy[0] + index_xy[0]) // 2, (thumb_xy[1] + index_xy[1]) // 2)
-                            new_corner_pos = (pinch_center[0] - self.drag_offset[0], pinch_center[1] - self.drag_offset[1])
-                            self.update_quad_position(new_corner_pos, self.drag_corner_index)
-                    else:
-                        # Not pinching - stop dragging
-                        if self.dragging_window:
-                            self.dragging_window = False
-                            self.drag_corner_index = None
-                            self.drag_offset = (0, 0)
+                # Handle window dragging
+                self._handle_dragging(thumb_xy, index_xy)
 
-                # Only collect quad points if not dragging, not resizing, and no existing quad
-                if not self.dragging_window and not self.resizing_window and self.is_pinched(thumb_xy, index_xy):
+                # Collect quad points for new quad creation
+                if not self.quad_manager.dragging_window and not self.quad_manager.resizing_window and self.gesture_recognizer.is_pinched(thumb_xy, index_xy):
                     quad_points.append(thumb_xy)
                     quad_points.append(index_xy)
 
+                # Handle tracing if enabled
                 if self.tracing_enabled:
-                    h, w, _ = frame.shape
                     index_tip = hand_landmarks.landmark[8]
                     x, y = int(index_tip.x * w), int(index_tip.y * h)
                     self.points.append((x, y))
                     cv2.circle(frame, (x, y), 5, (0, 0, 255), -1)
 
-            if len(quad_points) == 4:
-                # Allow creating multiple quads
-                if self.pinched_start_time is None:
-                    self.pinched_start_time = time.time()
-
-                live_rect = self.get_rectangle_from_points(quad_points)
-                for i in range(4):
-                    cv2.line(
-                        frame, live_rect[i], live_rect[(i + 1) % 4], (0, 255, 255), 3
-                    )
-
-                # If a spawn request exists, create new quad immediately 
-                if self.spawned_app is not None:
-                    # Create new quad and add to list
-                    new_quad = {
-                        'quad_points': live_rect,
-                        'app': self.spawned_app
-                    }
-                    self.all_app_quads.append(new_quad)
-                    
-                    # Set as current active quad for backward compatibility
-                    self.quad_points = live_rect
-                    self.quad_active = True
-                    print(f"Created new quad for {self.spawned_app}")
-                    self.spawned_app = None  # Clear the request
-                    
-                elif self.pinched_start_time is not None and time.time() - self.pinched_start_time >= 2.0:
-                    # Fallback: 2 second hold creates a default quad
-                    app_name = 'Spotify' if not self.voice_enabled else None
-                    new_quad = {
-                        'quad_points': live_rect,
-                        'app': app_name
-                    }
-                    self.all_app_quads.append(new_quad)
-                    
-                    self.quad_points = live_rect
-                    self.quad_active = True
-                    print(f"Created new quad for {app_name}")
-                    
-                    # Auto-request Spotify if voice disabled
-                    if not self.voice_enabled and self.spawned_app is None:
-                        self.spawned_app = 'Spotify'
-            else:
-                self.pinched_start_time = None
+            # Handle quad creation
+            self._handle_quad_creation(quad_points, frame)
 
         else:
-            self.pinched_start_time = None
+            self.quad_manager.pinched_start_time = None
 
+        # Draw tracing if enabled
         if self.tracing_enabled:
             for i in range(1, len(self.points)):
                 cv2.line(frame, self.points[i - 1], self.points[i], (0, 255, 0), 2)
 
-        # If a miniplayer was requested but no quad has been captured yet, create
-        # a sane default rectangle centered in the frame so the app can be drawn.
-        if self.spawned_app is not None and (not self.quad_points or len(self.quad_points) != 4):
-            h, w, _ = frame.shape
-            # default size: 40% width, 25% height, clamped to the frame
-            box_w = int(w * 0.4)
-            box_h = int(h * 0.25)
-            box_w = max(100, min(box_w, w - 40))
-            box_h = max(80, min(box_h, h - 40))
-            cx, cy = w // 2, h // 2
-            left = cx - box_w // 2
-            right = cx + box_w // 2
-            top = cy - box_h // 2
-            bottom = cy + box_h // 2
-            self.quad_points = [(left, top), (right, top), (right, bottom), (left, bottom)]
-            self.quad_active = True
+        # Create default quad if needed
+        if self.spawned_app is not None and (not self.quad_manager.quad_points or len(self.quad_manager.quad_points) != 4):
+            self.quad_manager.create_default_quad(frame.shape, self.spawned_app)
 
-        if self.quad_active and len(self.quad_points) == 4:
-            volume = None
-            if self.volume_gesture_enabled and results.multi_hand_landmarks:
-                hand_landmarks = results.multi_hand_landmarks[0]
-                h, w, _ = frame.shape
-                thumb_tip = hand_landmarks.landmark[4]
-                index_tip = hand_landmarks.landmark[8]
-                x1, y1 = int(thumb_tip.x * w), int(thumb_tip.y * h)
-                x2, y2 = int(index_tip.x * w), int(index_tip.y * h)
-                pinch_dist = math.hypot(x2 - x1, y2 - y1)
+        # Handle volume gestures and button interactions
+        if self.quad_manager.quad_active and len(self.quad_manager.quad_points) == 4:
+            self._handle_volume_and_buttons(frame, results)
 
-                min_dist, max_dist = 20, 200
-                volume = int(
-                    np.clip(
-                        (pinch_dist - min_dist) / (max_dist - min_dist) * 100, 0, 100
-                    )
-                )
+        # Draw debug quad
+        frame = self.quad_manager.draw_debug_quad(frame, self.spawned_app)
 
-                if abs(volume - self.last_volume_set) > 2:
-                    # enqueue instead of blocking
-                    self._enqueue_volume(volume)
-                    self.last_volume_set = volume
-
-            # store current volume for external renderer (AppManager)
-            self.current_volume = volume
-
-            # --- debug: draw a visible rectangle and label when a miniplayer is requested ---
-            if self.spawned_app is not None and self.quad_points and len(self.quad_points) == 4:
-                try:
-                    pts = np.array(self.quad_points, dtype=np.int32).reshape((-1, 1, 2))
-                    cv2.polylines(frame, [pts], isClosed=True, color=(0, 128, 255), thickness=4)
-                    tl_x, tl_y = self.quad_points[0]
-                    # label background
-                    cv2.rectangle(frame, (tl_x, max(0, tl_y - 28)), (tl_x + 140, tl_y), (0, 128, 255), -1)
-                    cv2.putText(
-                        frame,
-                        f"{self.spawned_app}",
-                        (tl_x + 6, tl_y - 6),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6,
-                        (255, 255, 255),
-                        2,
-                    )
-                except Exception:
-                    pass
-
-            # removed draw_miniplayer — rendering handled by AppManager in main
-            # keep button detection logic here (miniplayer coordinate mapping)
-            if results.multi_hand_landmarks:
-                for hand_landmarks in results.multi_hand_landmarks:
-                    h, w, _ = frame.shape
-                    index_tip = hand_landmarks.landmark[8]
-                    index_xy = (int(index_tip.x * w), int(index_tip.y * h))
-                    miniplayer_xy = self.screen_to_miniplayer(
-                        index_xy, self.quad_points
-                    )
-
-                    for btn, center in self.MINIPLAYER_BUTTONS.items():
-                        dist = math.hypot(
-                            miniplayer_xy[0] - center[0], miniplayer_xy[1] - center[1]
-                        )
-                        if dist < self.MINIPLAYER_RADIUS:
-                            if not hasattr(self, "last_btn_time"):
-                                self.last_btn_time = 0
-                            if time.time() - self.last_btn_time > 1:
-                                if btn == "prev":
-                                    previous_track()
-                                elif btn == "play":
-                                    toggle_play_pause()
-                                elif btn == "next":
-                                    next_track()
-                                self.last_btn_time = time.time()
         return frame
 
+    def _handle_resize_gestures(self, all_pinches):
+        """Handle two-hand resize gestures."""
+        if len(all_pinches) == 2 and self.quad_manager.quad_points and len(self.quad_manager.quad_points) == 4:
+            hand1_idx, hand1_landmarks, thumb1, index1, pinch1_center = all_pinches[0]
+            hand2_idx, hand2_landmarks, thumb2, index2, pinch2_center = all_pinches[1]
+            
+            if not self.quad_manager.resizing_window:
+                # Starting new resize
+                corners_pinched = []
+                for i, corner in enumerate(self.quad_manager.quad_points):
+                    if self.gesture_recognizer.is_near_corner(pinch1_center, corner, threshold=50):
+                        corners_pinched.append((i, hand1_idx, pinch1_center))
+                    elif self.gesture_recognizer.is_near_corner(pinch2_center, corner, threshold=50):
+                        corners_pinched.append((i, hand2_idx, pinch2_center))
+                
+                if len(corners_pinched) == 2:
+                    corner1_idx, hand1_id, pos1 = corners_pinched[0]
+                    corner2_idx, hand2_id, pos2 = corners_pinched[1]
+                    
+                    if self.quad_manager.are_opposite_corners(corner1_idx, corner2_idx):
+                        # Start resizing
+                        if self.quad_manager.dragging_window:
+                            self.quad_manager.dragging_window = False
+                            self.quad_manager.drag_corner_index = None
+                            self.quad_manager.drag_offset = (0, 0)
+                        
+                        self.quad_manager.resizing_window = True
+                        self.quad_manager.resize_corners = [corner1_idx, corner2_idx]
+                        self.quad_manager.resize_hand_assignments = {
+                            hand1_id: corner1_idx,
+                            hand2_id: corner2_idx
+                        }
+            else:
+                # Continue resizing
+                if hand1_idx in self.quad_manager.resize_hand_assignments and hand2_idx in self.quad_manager.resize_hand_assignments:
+                    corner1_idx = self.quad_manager.resize_hand_assignments[hand1_idx]
+                    corner2_idx = self.quad_manager.resize_hand_assignments[hand2_idx]
+                    
+                    corner_positions = [
+                        (corner1_idx, pinch1_center),
+                        (corner2_idx, pinch2_center)
+                    ]
+                    self.quad_manager.update_quad_resize(corner_positions)
+                else:
+                    # Hand assignments lost - stop resizing
+                    self.quad_manager.resizing_window = False
+                    self.quad_manager.resize_corners = []
+                    self.quad_manager.resize_hand_assignments = {}
+        else:
+            # Not enough pinches or no quad - stop resizing
+            if self.quad_manager.resizing_window:
+                self.quad_manager.resizing_window = False
+                self.quad_manager.resize_corners = []
+                self.quad_manager.resize_hand_assignments = {}
+
+    def _handle_dragging(self, thumb_xy, index_xy):
+        """Handle window dragging gestures."""
+        if self.quad_manager.quad_points and len(self.quad_manager.quad_points) == 4 and not self.quad_manager.resizing_window:
+            if self.gesture_recognizer.is_pinched(thumb_xy, index_xy):
+                if not self.quad_manager.dragging_window:
+                    # Check if pinch is near any corner
+                    for i in [0, 1, 2, 3]:  # all corners
+                        if (self.gesture_recognizer.is_near_corner(thumb_xy, self.quad_manager.quad_points[i]) or 
+                            self.gesture_recognizer.is_near_corner(index_xy, self.quad_manager.quad_points[i])):
+                            self.quad_manager.dragging_window = True
+                            self.quad_manager.drag_corner_index = i
+                            # Calculate offset from corner to pinch center
+                            pinch_center = ((thumb_xy[0] + index_xy[0]) // 2, (thumb_xy[1] + index_xy[1]) // 2)
+                            corner = self.quad_manager.quad_points[i]
+                            self.quad_manager.drag_offset = (pinch_center[0] - corner[0], pinch_center[1] - corner[1])
+                            break
+                else:
+                    # Continue dragging - move the quad
+                    pinch_center = ((thumb_xy[0] + index_xy[0]) // 2, (thumb_xy[1] + index_xy[1]) // 2)
+                    new_corner_pos = (pinch_center[0] - self.quad_manager.drag_offset[0], pinch_center[1] - self.quad_manager.drag_offset[1])
+                    self.quad_manager.update_quad_position(new_corner_pos, self.quad_manager.drag_corner_index)
+            else:
+                # Not pinching - stop dragging
+                if self.quad_manager.dragging_window:
+                    self.quad_manager.dragging_window = False
+                    self.quad_manager.drag_corner_index = None
+                    self.quad_manager.drag_offset = (0, 0)
+
+    def _handle_quad_creation(self, quad_points, frame):
+        """Handle creation of new quads from pinch gestures."""
+        if len(quad_points) == 4:
+            # Allow creating multiple quads
+            if self.quad_manager.pinched_start_time is None:
+                self.quad_manager.pinched_start_time = time.time()
+
+            live_rect = self.quad_manager.get_rectangle_from_points(quad_points)
+            for i in range(4):
+                cv2.line(frame, live_rect[i], live_rect[(i + 1) % 4], (0, 255, 255), 3)
+
+            # If a spawn request exists, create new quad immediately 
+            if self.spawned_app is not None:
+                self.quad_manager.create_quad(live_rect, self.spawned_app)
+                self.spawned_app = None  # Clear the request
+                
+            elif self.quad_manager.pinched_start_time is not None and time.time() - self.quad_manager.pinched_start_time >= 2.0:
+                # Fallback: 2 second hold creates a default quad
+                app_name = 'Spotify' if not self.voice_enabled else None
+                self.quad_manager.create_quad(live_rect, app_name)
+                
+                # Auto-request Spotify if voice disabled
+                if not self.voice_enabled and self.spawned_app is None:
+                    self.spawned_app = 'Spotify'
+        else:
+            self.quad_manager.pinched_start_time = None
+
+    def _handle_volume_and_buttons(self, frame, results):
+        """Handle volume gestures and button interactions."""
+        volume = None
+        if self.volume_controller.volume_gesture_enabled and results.multi_hand_landmarks:
+            hand_landmarks = results.multi_hand_landmarks[0]
+            h, w, _ = frame.shape
+            thumb_tip = hand_landmarks.landmark[4]
+            index_tip = hand_landmarks.landmark[8]
+            thumb_xy = (int(thumb_tip.x * w), int(thumb_tip.y * h))
+            index_xy = (int(index_tip.x * w), int(index_tip.y * h))
+            
+            volume = self.volume_controller.calculate_volume_from_pinch(thumb_xy, index_xy)
+
+        # Store current volume for external renderer (AppManager)
+        self.volume_controller.current_volume = volume
+
+        # Handle button interactions
+        if results.multi_hand_landmarks:
+            for hand_landmarks in results.multi_hand_landmarks:
+                h, w, _ = frame.shape
+                index_tip = hand_landmarks.landmark[8]
+                index_xy = (int(index_tip.x * w), int(index_tip.y * h))
+                miniplayer_xy = self.screen_to_miniplayer(index_xy, self.quad_manager.quad_points)
+
+                for btn, center in self.MINIPLAYER_BUTTONS.items():
+                    import math
+                    dist = math.hypot(miniplayer_xy[0] - center[0], miniplayer_xy[1] - center[1])
+                    if dist < self.MINIPLAYER_RADIUS:
+                        if not hasattr(self, "last_btn_time"):
+                            self.last_btn_time = 0
+                        if time.time() - self.last_btn_time > 1:
+                            if btn == "prev":
+                                previous_track()
+                            elif btn == "play":
+                                toggle_play_pause()
+                            elif btn == "next":
+                                next_track()
+                            self.last_btn_time = time.time()
+
     def toggle_quad(self):
-        self.quad_active = not self.quad_active
-        if not self.quad_active:
-            self.quad_points = []
+        """Toggle the active state of all quads."""
+        self.quad_manager.toggle_quad()
 
     def spawn_miniplayer(self, app_name: str = "Spotify"):
-        """Request a miniplayer for an app. This sets state — the main loop will draw the miniplayer when a quad exists."""
+        """Request a miniplayer for an app."""
         self.spawned_app = app_name
-        self.quad_active = True
-        # Keep existing quad_points if present; user can form the quad first
+        self.quad_manager.quad_active = True
         print(f"Spawn requested for: {app_name}")
 
     def get_all_app_regions(self):
         """Get all app quads formatted for AppManager multi-app rendering."""
-        if not self.all_app_quads:
-            return []
-        
-        app_regions = []
-        for quad_data in self.all_app_quads:
-            if quad_data['app'] and len(quad_data['quad_points']) == 4:
-                app_regions.append({
-                    'app_id': quad_data['app'].lower(),
-                    'rect_points': quad_data['quad_points'],
-                    'opacity': 0.9
-                })
-        
-        return app_regions
+        return self.quad_manager.get_all_app_regions()
+
+    def __del__(self):
+        """Cleanup when the HandTracker is destroyed."""
+        if hasattr(self, 'volume_controller'):
+            self.volume_controller.cleanup()

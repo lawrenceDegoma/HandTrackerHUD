@@ -75,8 +75,10 @@ def main():
             app_manager.close_app()
             tracker.gesture_closed_window = False
 
-        # fetch cached track info once per loop
-        track_info = tracker.get_cached_track_info()
+        # Only fetch track info when we actually have a Spotify miniplayer active
+        track_info = None
+        if tracker.quad_active and len(tracker.quad_points) == 4 and app_manager.current_app == 'Spotify':
+            track_info = tracker.get_cached_track_info()
 
         # Performance monitoring for 60 FPS
         fps_counter += 1

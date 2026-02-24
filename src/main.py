@@ -109,6 +109,15 @@ def main():
         # if an app is spawned, draw it in the quad
         if tracker.quad_active and len(tracker.quad_points) == 4 and app_manager.current_app:
             frame = app_manager.draw_app_in_rect(frame, tracker.quad_points, volume=tracker.current_volume, track_info=track_info)
+        
+        # Draw app bar
+        frame = app_manager.draw_app_bar(frame)
+        
+        # Handle app bar interactions
+        app_bar_result = tracker.handle_app_bar_selection(app_manager, frame.shape)
+        if app_bar_result:
+            if app_bar_result.get("spawned"):
+                app_manager.spawn_app(app_bar_result["app"])
 
         cv2.imshow('Hand Tracker', frame)
 
@@ -132,6 +141,11 @@ def main():
         elif key == ord('m'):
             tracker.voice_enabled = not tracker.voice_enabled
             print("Voice enabled:", tracker.voice_enabled)
+        
+        # toggle app bar with 'a'
+        elif key == ord('a'):
+            app_manager.toggle_app_bar()
+            print("App bar toggled")
             if tracker.voice_enabled:
                 # ensure listener running
                 if stop_event.is_set():

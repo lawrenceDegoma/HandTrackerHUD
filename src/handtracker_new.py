@@ -9,7 +9,7 @@ import cv2
 import mediapipe as mp
 import time
 from utils import get_current_track, toggle_play_pause, next_track, previous_track
-from hand_tracker_components import GestureRecognizer, CloseGestureDetector, QuadManager, VolumeController
+from components import GestureRecognizer, CloseGestureDetector, QuadManager, VolumeController
 
 
 class HandTracker:
@@ -56,18 +56,6 @@ class HandTracker:
         
         # Gesture state
         self.gesture_closed_window = False  # flag for main.py to detect gesture close
-        
-        # App bar interaction state
-        self.app_bar_interaction = {
-            "pinching": False,
-            "pinch_pos": None,
-            "drag_active": False,
-            "drag_app": None,
-            "last_pinch_time": 0,
-            "selected_app": None,
-            "selection_start_time": 0,
-            "spawning": False
-        }
 
     # Properties for backward compatibility
     @property
@@ -190,10 +178,7 @@ class HandTracker:
                 self._handle_dragging(thumb_xy, index_xy)
 
                 # Collect quad points for new quad creation
-                if (not self.quad_manager.dragging_window and 
-                    not self.quad_manager.resizing_window and 
-                    not self._is_app_bar_interaction_active() and
-                    self.gesture_recognizer.is_pinched(thumb_xy, index_xy)):
+                if not self.quad_manager.dragging_window and not self.quad_manager.resizing_window and self.gesture_recognizer.is_pinched(thumb_xy, index_xy):
                     quad_points.append(thumb_xy)
                     quad_points.append(index_xy)
 
@@ -222,9 +207,6 @@ class HandTracker:
         # Handle volume gestures and button interactions
         if self.quad_manager.quad_active and len(self.quad_manager.quad_points) == 4:
             self._handle_volume_and_buttons(frame, results)
-        
-        # Handle app bar interactions (pointing gestures)
-        self._handle_app_bar_interactions(frame, results)
 
         # Draw debug quad
         frame = self.quad_manager.draw_debug_quad(frame, self.spawned_app)
@@ -380,51 +362,6 @@ class HandTracker:
                                 next_track()
                             self.last_btn_time = time.time()
 
-    def _handle_app_bar_interactions(self, frame, results):
-        """Handle pinch gestures for app bar interaction."""
-        if not results.multi_hand_landmarks:
-            # Reset interaction state when no hands detected
-            self.app_bar_interaction["pinching"] = False
-            # Don't clear pinch_pos - let handle_app_bar_selection use it for spawning
-            return
-        
-        # Check for pinch gesture on any hand
-        pinch_detected = False
-        pinch_pos = None
-        
-        for hand_landmarks in results.multi_hand_landmarks:
-            h, w, _ = frame.shape
-            thumb_tip = hand_landmarks.landmark[4]
-            index_tip = hand_landmarks.landmark[8]
-            thumb_xy = (int(thumb_tip.x * w), int(thumb_tip.y * h))
-            index_xy = (int(index_tip.x * w), int(index_tip.y * h))
-            
-            if self.gesture_recognizer.is_pinched(thumb_xy, index_xy):
-                # Use the center point between thumb and index finger
-                pinch_pos = ((thumb_xy[0] + index_xy[0]) // 2, (thumb_xy[1] + index_xy[1]) // 2)
-                pinch_detected = True
-                break
-        
-        # Update pinch state
-        current_time = time.time()
-        if pinch_detected:
-            self.app_bar_interaction["pinching"] = True
-            self.app_bar_interaction["pinch_pos"] = pinch_pos
-            self.app_bar_interaction["last_pinch_time"] = current_time
-            
-            # Draw pinch indicator
-            if pinch_pos:
-                cv2.circle(frame, pinch_pos, 15, (255, 0, 255), 3)  # Magenta circle for pinching
-        else:
-            # Increase pinch release timing for more stability
-            if current_time - self.app_bar_interaction["last_pinch_time"] > 0.1:  # 100ms delay
-                if self.app_bar_interaction["pinching"]:
-                    print(f"DEBUG: Pinch released after {(current_time - self.app_bar_interaction['last_pinch_time']) * 1000:.1f}ms")
-                    print(f"DEBUG: Release position: {self.app_bar_interaction['pinch_pos']}")
-                    # Don't set spawning flag here - only set it when actually spawning
-                self.app_bar_interaction["pinching"] = False
-                # Keep pinch_pos for spawning logic, but clear it if not spawning
-
     def toggle_quad(self):
         """Toggle the active state of all quads."""
         self.quad_manager.toggle_quad()
@@ -438,105 +375,6 @@ class HandTracker:
     def get_all_app_regions(self):
         """Get all app quads formatted for AppManager multi-app rendering."""
         return self.quad_manager.get_all_app_regions()
-    
-    def get_app_bar_interaction(self):
-        """Get current app bar interaction state."""
-        return self.app_bar_interaction.copy()
-    
-    def _is_app_bar_interaction_active(self):
-        """Check if app bar interaction is currently active."""
-        return (self.app_bar_interaction["drag_active"] or 
-                (self.app_bar_interaction["pinching"] and 
-                 self.app_bar_interaction["pinch_pos"] and
-                 self.app_bar_interaction["selected_app"] is not None) or
-                self.app_bar_interaction["spawning"])
-    
-    def handle_app_bar_spawn(self, spawn_info):
-        """Handle app spawning from app bar drag and drop."""
-        print(f"DEBUG: handle_app_bar_spawn called with: {spawn_info}")
-        if spawn_info and "app_name" in spawn_info and "quad_points" in spawn_info:
-            app_name = spawn_info["app_name"]
-            quad_points = spawn_info["quad_points"]
-            
-            # Set the quad points directly
-            self.quad_manager.quad_points = quad_points
-            self.quad_manager.quad_active = True
-            self.spawned_app = app_name
-            
-            print(f"DEBUG: App spawned successfully: {app_name} with quad_points: {quad_points}")
-            return True
-        print(f"DEBUG: Spawn failed - invalid spawn_info")
-        return False
-    
-    def handle_app_bar_selection(self, app_manager, frame_shape):
-        """Handle app bar selection logic within HandTracker."""
-        current_time = time.time()
-        
-        # If we're already in the process of spawning, don't allow new interactions
-        if self.app_bar_interaction.get("spawning", False):
-            return
-        
-        if self.app_bar_interaction["pinching"] and self.app_bar_interaction["pinch_pos"]:
-            x, y = self.app_bar_interaction["pinch_pos"]
-            
-            # If pinching at app bar, immediately start drag
-            if app_manager.is_point_in_app_bar(x, y):
-                if self.app_bar_interaction["selected_app"] is None:
-                    selected_app = app_manager.handle_app_bar_click(x, y)
-                    if selected_app:
-                        self.app_bar_interaction["selected_app"] = selected_app
-                        self.app_bar_interaction["selection_start_time"] = current_time
-                        print(f"Selected app for dragging: {selected_app}")
-                
-                # Immediately activate drag when app is selected
-                if self.app_bar_interaction["selected_app"]:
-                    self.app_bar_interaction["drag_active"] = True
-            
-            # Continue drag if drag is active (even outside app bar)
-            if self.app_bar_interaction["drag_active"] and self.app_bar_interaction["selected_app"]:
-                app_manager.handle_app_bar_drag(x, y)
-                return {"dragging": True, "app": self.app_bar_interaction["selected_app"]}
-                
-        else:
-            # Pinch was released - check if we should spawn
-            if (self.app_bar_interaction["drag_active"] and 
-                self.app_bar_interaction["selected_app"] and
-                self.app_bar_interaction["pinch_pos"]):  # Use last known pinch position
-                
-                x, y = self.app_bar_interaction["pinch_pos"]
-                print(f"DEBUG: Pinch released at ({x}, {y}), checking spawn...")
-                
-                # Only spawn if released outside app bar
-                if not app_manager.is_point_in_app_bar(x, y):
-                    print(f"DEBUG: Outside app bar, attempting spawn...")
-                    # Set spawning flag to prevent new interactions during spawn
-                    self.app_bar_interaction["spawning"] = True
-                    spawn_info = app_manager.handle_app_bar_release(x, y, frame_shape)
-                    print(f"DEBUG: Spawn info: {spawn_info}")
-                    if spawn_info:
-                        if self.handle_app_bar_spawn(spawn_info):
-                            # Reset all selection state
-                            self._reset_app_bar_selection()
-                            return {"spawned": True, "app": spawn_info["app_name"]}
-                else:
-                    print(f"DEBUG: Released inside app bar, cancelling...")
-                    # Reset selection state when cancelled
-                    self._reset_app_bar_selection()
-                
-                # Reset selection (cancelled or dropped back on app bar)
-                app_manager.handle_app_bar_release(0, 0, frame_shape)  # Cancel drag
-                self._reset_app_bar_selection()
-        
-        return None
-    
-    def _reset_app_bar_selection(self):
-        """Reset app bar selection state."""
-        self.app_bar_interaction["selected_app"] = None
-        self.app_bar_interaction["selection_start_time"] = 0
-        self.app_bar_interaction["drag_active"] = False
-        self.app_bar_interaction["pinch_pos"] = None  # Clear pinch position after spawn/cancel
-        self.app_bar_interaction["spawning"] = False  # Clear spawning flag
-        print("DEBUG: App bar interaction state fully reset")
 
     def __del__(self):
         """Cleanup when the HandTracker is destroyed."""

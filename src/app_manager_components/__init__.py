@@ -7,11 +7,13 @@ Specialized components for UI rendering, media player interface, and window mana
 from .ui_components import TextRenderer
 from .miniplayer import SpotifyMiniplayer, AlbumArtCache
 from .window_capture import WindowCapture, FrameOverlay
+from .app_bar import AppBar
 
 __all__ = [
     'TextRenderer',
     'SpotifyMiniplayer',
     'AlbumArtCache',
     'WindowCapture',
-    'FrameOverlay'
+    'FrameOverlay',
+    'AppBar'
 ]

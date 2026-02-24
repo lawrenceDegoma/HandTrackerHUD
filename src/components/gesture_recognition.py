@@ -28,62 +28,6 @@ class GestureRecognizer:
         x2, y2 = corner
         return math.hypot(x2 - x1, y2 - y1) < threshold
     
-    def is_pointing(self, hand_landmarks):
-        """Detect pointing gesture (index finger extended, others curled)."""
-        # Get landmark positions (normalized 0-1)
-        landmarks = hand_landmarks.landmark
-        
-        # Index finger: tip should be extended (further from palm than pip)
-        index_tip = landmarks[8]
-        index_pip = landmarks[6]  # Proximal interphalangeal joint
-        index_mcp = landmarks[5]  # Metacarpophalangeal joint
-        
-        # Middle finger: tip should be curled (closer to palm than pip)
-        middle_tip = landmarks[12]
-        middle_pip = landmarks[10]
-        
-        # Ring finger: tip should be curled
-        ring_tip = landmarks[16] 
-        ring_pip = landmarks[14]
-        
-        # Pinky: tip should be curled
-        pinky_tip = landmarks[20]
-        pinky_pip = landmarks[18]
-        
-        # Check if index finger is extended (tip further from mcp than pip)
-        index_extended = (
-            math.hypot(index_tip.x - index_mcp.x, index_tip.y - index_mcp.y) >
-            math.hypot(index_pip.x - index_mcp.x, index_pip.y - index_mcp.y)
-        )
-        
-        # Check if other fingers are curled (tips closer to palm than pips)
-        middle_curled = (
-            math.hypot(middle_tip.x - index_mcp.x, middle_tip.y - index_mcp.y) <
-            math.hypot(middle_pip.x - index_mcp.x, middle_pip.y - index_mcp.y)
-        )
-        
-        ring_curled = (
-            math.hypot(ring_tip.x - index_mcp.x, ring_tip.y - index_mcp.y) <
-            math.hypot(ring_pip.x - index_mcp.x, ring_pip.y - index_mcp.y)
-        )
-        
-        pinky_curled = (
-            math.hypot(pinky_tip.x - index_mcp.x, pinky_tip.y - index_mcp.y) <
-            math.hypot(pinky_pip.x - index_mcp.x, pinky_pip.y - index_mcp.y)
-        )
-        
-        return index_extended and middle_curled and ring_curled and pinky_curled
-    
-    def get_pointing_position(self, hand_landmarks, frame_shape):
-        """Get the screen position where the hand is pointing."""
-        if not self.is_pointing(hand_landmarks):
-            return None
-            
-        # Use index finger tip position
-        index_tip = hand_landmarks.landmark[8]
-        h, w = frame_shape[:2]
-        return (int(index_tip.x * w), int(index_tip.y * h))
-    
     def get_wrist_angle(self, hand_landmarks):
         """Calculate the angle of the wrist based on hand orientation."""
         # Use wrist (0) and middle finger base (9) to determine hand orientation

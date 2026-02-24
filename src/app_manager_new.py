@@ -6,7 +6,8 @@ command handling, and rendering through specialized components.
 """
 
 from utils import get_current_track
-from app_manager_components import SpotifyMiniplayer, WindowCapture, FrameOverlay, AppBar
+from miniplayer import SpotifyMiniplayer
+from window_capture import WindowCapture, FrameOverlay
 
 
 class AppManager:
@@ -19,7 +20,6 @@ class AppManager:
         self.spotify_player = SpotifyMiniplayer()
         self.window_capture = WindowCapture()
         self.frame_overlay = FrameOverlay()
-        self.app_bar = AppBar(position="bottom", height=80)
 
     def spawn_app(self, name: str):
         """Spawn a new application."""
@@ -106,27 +106,3 @@ class AppManager:
         # fallback: draw placeholder miniplayer
         mini = self.spotify_player.draw_miniplayer_image({'name': self.current_app, 'artist': ''}, volume=volume, opacity=opacity)
         return self.frame_overlay.warp_and_overlay(frame, mini, rect_points, opacity=opacity)
-    
-    def draw_app_bar(self, frame):
-        """Draw the app bar on the frame."""
-        return self.app_bar.draw(frame)
-    
-    def handle_app_bar_click(self, x, y):
-        """Handle click on app bar - returns app name if clicked."""
-        return self.app_bar.handle_click(x, y)
-    
-    def handle_app_bar_drag(self, x, y):
-        """Handle drag motion on app bar."""
-        self.app_bar.handle_drag(x, y)
-    
-    def handle_app_bar_release(self, x, y, frame_shape):
-        """Handle drag release - returns spawn info if valid drop."""
-        return self.app_bar.handle_release(x, y, frame_shape)
-    
-    def toggle_app_bar(self):
-        """Toggle app bar visibility."""
-        self.app_bar.toggle_visibility()
-    
-    def is_point_in_app_bar(self, x, y):
-        """Check if point is within app bar area."""
-        return self.app_bar.is_point_in_bar(x, y)

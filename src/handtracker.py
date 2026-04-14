@@ -48,7 +48,7 @@ class HandTracker:
         
         # App management
         self.spawned_app = None  # name of app/miniplayer requested by voice or UI
-        self.voice_enabled = True  # voice controls enabled by default
+        self.voice_enabled = False  # voice controls disabled by default to avoid audio ducking
         
         # Track info caching
         self.last_track_info = None

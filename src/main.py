@@ -1,5 +1,6 @@
 import cv2
 import time
+import threading
 from handtracker import HandTracker
 from utils import get_current_track, toggle_play_pause, next_track, previous_track
 from voice_control import start_voice_listener
@@ -10,9 +11,10 @@ import queue
 def main():
     _ = get_current_track()
 
-    # start voice listener (background thread)
+    # start voice listener only when voice is enabled (off by default to avoid audio ducking)
     cmd_queue = queue.Queue()
-    stop_event = start_voice_listener(cmd_queue)
+    stop_event = threading.Event()
+    stop_event.set()  # Start with listener stopped
 
     cap = cv2.VideoCapture(0)
     

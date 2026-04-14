@@ -8,6 +8,7 @@ without requiring voice commands. Shows available apps as draggable icons.
 import cv2
 import numpy as np
 import time
+import os
 
 
 class AppBar:
@@ -43,6 +44,39 @@ class AppBar:
         self.drag_start_pos = None
         self.drag_current_pos = None
         
+        # Load Spotify PNG icon
+        self.spotify_img = self._load_image("spotify.png", size=50)
+        
+    def _load_image(self, filename, size=50):
+        """Load an image from the public folder and resize it."""
+        try:
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            # app_bar.py is in src/app_manager_components, so go up two levels to reach project root
+            project_root = os.path.dirname(os.path.dirname(current_dir))
+            path = os.path.join(project_root, "public", filename)
+            if os.path.exists(path):
+                img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+                if img is not None:
+                    return cv2.resize(img, (size, size))
+            print(f"Could not find {path}")
+        except Exception as e:
+            print(f"Could not load {filename}: {e}")
+        return None
+
+    def _overlay_image(self, frame, img, cx, cy):
+        """Overlay img centered at (cx, cy) on frame, respecting alpha."""
+        h, w = img.shape[:2]
+        x1, y1 = cx - w // 2, cy - h // 2
+        x2, y2 = x1 + w, y1 + h
+        # Clamp to frame bounds
+        if x1 < 0 or y1 < 0 or x2 > frame.shape[1] or y2 > frame.shape[0]:
+            return
+        if img.shape[2] == 4:  # RGBA
+            alpha = img[:, :, 3:] / 255.0
+            frame[y1:y2, x1:x2] = (alpha * img[:, :, :3] + (1 - alpha) * frame[y1:y2, x1:x2]).astype(np.uint8)
+        else:
+            frame[y1:y2, x1:x2] = img
+
     def calculate_layout(self, frame_shape):
         """Calculate app bar layout based on frame size."""
         frame_height, frame_width = frame_shape[:2]
@@ -91,12 +125,17 @@ class AppBar:
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (200, 200, 200), 2)
                 
                 # Draw app icon/text
-                icon_text = app_info["icon"]
-                text_size = cv2.getTextSize(icon_text, cv2.FONT_HERSHEY_SIMPLEX, 1.5, 2)[0]
-                text_x = x1 + (x2 - x1 - text_size[0]) // 2
-                text_y = y1 + (y2 - y1 + text_size[1]) // 2
-                cv2.putText(frame, icon_text, (text_x, text_y), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 1.5, app_info["text_color"], 2)
+                if app_name == "Spotify" and self.spotify_img is not None:
+                    cx = x1 + (x2 - x1) // 2
+                    cy = y1 + (y2 - y1) // 2
+                    self._overlay_image(frame, self.spotify_img, cx, cy)
+                else:
+                    icon_text = app_info["icon"]
+                    text_size = cv2.getTextSize(icon_text, cv2.FONT_HERSHEY_SIMPLEX, 1.5, 2)[0]
+                    text_x = x1 + (x2 - x1 - text_size[0]) // 2
+                    text_y = y1 + (y2 - y1 + text_size[1]) // 2
+                    cv2.putText(frame, icon_text, (text_x, text_y), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 1.5, app_info["text_color"], 2)
                 
                 # Draw app name
                 name_size = cv2.getTextSize(app_name, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)[0]
@@ -131,12 +170,15 @@ class AppBar:
         frame = cv2.addWeighted(frame, 0.7, overlay, 0.3, 0)
         
         # Draw icon
-        icon_text = app_info["icon"]
-        text_size = cv2.getTextSize(icon_text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)[0]
-        text_x = x - text_size[0] // 2
-        text_y = y + text_size[1] // 2
-        cv2.putText(frame, icon_text, (text_x, text_y), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 1.0, app_info["text_color"], 2)
+        if self.dragging_app == "Spotify" and self.spotify_img is not None:
+            self._overlay_image(frame, self.spotify_img, x, y)
+        else:
+            icon_text = app_info["icon"]
+            text_size = cv2.getTextSize(icon_text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)[0]
+            text_x = x - text_size[0] // 2
+            text_y = y + text_size[1] // 2
+            cv2.putText(frame, icon_text, (text_x, text_y), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, app_info["text_color"], 2)
     
     def handle_click(self, x, y):
         """Handle mouse/touch click on app bar."""
